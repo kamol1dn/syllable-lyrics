@@ -3,7 +3,7 @@ package dev.kamol1dn.syllable.lyrics
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** lrclib.net — free, open, mostly line-synced (sometimes word-tagged) LRC. */
+/** lrclib.net: free, open LRC lyrics, mostly line-synced and sometimes word-tagged. */
 class LrclibProvider : LyricsProvider {
     override val name = "LRCLIB"
 

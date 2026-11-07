@@ -14,10 +14,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -74,8 +76,9 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit, onSpotifyLogin: () -> 
     }
     var cacheCleared by remember { mutableStateOf(false) }
 
+    Box(Modifier.fillMaxSize().background(Color(0xFF0B0712)), contentAlignment = Alignment.TopCenter) {
     Column(
-        Modifier.fillMaxSize().background(Color(0xFF0B0712)).statusBarsPadding().navigationBarsPadding()
+        Modifier.widthIn(max = 640.dp).fillMaxWidth().windowInsetsPadding(WindowInsets.safeDrawing)
             .verticalScroll(rememberScrollState()),
     ) {
         Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -95,9 +98,9 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit, onSpotifyLogin: () -> 
                     )
                     Text(
                         if (spotify.signedIn) {
-                            if (spotify.hasToken) "Lyrics token active" else "Token refreshes automatically when needed"
+                            if (spotify.hasToken) "Connected" else "Stays signed in"
                         } else {
-                            "Sign in to use Spotify's lyrics, including syllable-synced ones where Spotify has them."
+                            "Sign in to get lyrics from Spotify. Some songs have word-by-word timing."
                         },
                         color = Color.White.copy(alpha = 0.6f), fontSize = 13.sp,
                     )
@@ -123,7 +126,7 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit, onSpotifyLogin: () -> 
             Toggle("Musixmatch (word-synced)", s.useMusixmatch) { v -> vm.settings.update { it.copy(useMusixmatch = v) } }
             Toggle("NetEase (word-synced)", s.useNetEase) { v -> vm.settings.update { it.copy(useNetEase = v) } }
             Text(
-                "LRCLIB is always used as a fallback. When only line timing exists, word timing is estimated.",
+                "LRCLIB is always on. If a song only has line timing, Syllable guesses the timing of each word.",
                 color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp),
             )
             Spacer(Modifier.height(8.dp))
@@ -145,8 +148,8 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit, onSpotifyLogin: () -> 
 
         Section("Sync")
         Card {
-            Text("Global offset  %+.1fs".format(s.syncOffsetMs / 1000f), color = Color.White)
-            Text("Positive shows lyrics earlier (useful with Bluetooth speakers).", color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp)
+            Text("Timing offset  %+.1fs".format(s.syncOffsetMs / 1000f), color = Color.White)
+            Text("Slide right to show lyrics earlier. Handy with Bluetooth speakers.", color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp)
             Slider(
                 value = s.syncOffsetMs.toFloat(),
                 onValueChange = { v -> vm.settings.update { it.copy(syncOffsetMs = ((v / 100).roundToInt() * 100).toLong()) } },
@@ -171,7 +174,7 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit, onSpotifyLogin: () -> 
         Card {
             Text("Syllable ${BuildConfigInfo.versionName(context)}", color = Color.White, fontWeight = FontWeight.SemiBold)
             Text(
-                "Word-by-word lyrics for anything playing. Song recognition uses Shazam's service; lyrics come from Spotify, Musixmatch, NetEase and LRCLIB.",
+                "Shows the lyrics of what you're playing, word by word. Songs are identified with Shazam. Lyrics come from Spotify, Musixmatch, NetEase and LRCLIB.",
                 color = Color.White.copy(alpha = 0.6f), fontSize = 13.sp,
             )
             Text(
@@ -185,6 +188,7 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit, onSpotifyLogin: () -> 
             )
         }
         Spacer(Modifier.height(32.dp))
+    }
     }
 }
 

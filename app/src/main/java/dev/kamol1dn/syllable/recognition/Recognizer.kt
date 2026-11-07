@@ -31,6 +31,7 @@ data class RecognizedTrack(
     val positionMs: Long,
     val anchorRealtime: Long,
     val shazamUrl: String?,
+    val spotifyTrackId: String? = null,
 )
 
 sealed interface RecognitionEvent {

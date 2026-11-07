@@ -12,6 +12,7 @@ import dev.kamol1dn.syllable.media.NowPlaying
 import dev.kamol1dn.syllable.recognition.RecognitionEvent
 import dev.kamol1dn.syllable.recognition.RecognizedTrack
 import dev.kamol1dn.syllable.recognition.Recognizer
+import dev.kamol1dn.syllable.spotify.SpotifyLyricsProvider
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -80,7 +81,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val track: StateFlow<TrackInfo?> = combine(_mode, media.nowPlaying, _recognized) { mode, np, rec ->
         when {
             mode == Mode.RECOGNIZED && rec != null -> TrackInfo(
-                "rec|${rec.artist}|${rec.title}", rec.title, rec.artist, rec.album, null, rec.coverUrl, null, null,
+                "rec|${rec.artist}|${rec.title}", rec.title, rec.artist, rec.album, null, rec.coverUrl, null, rec.spotifyTrackId,
             )
             np != null -> TrackInfo(
                 np.trackKey, np.title, np.artist, np.album, np.artwork, null,
@@ -162,6 +163,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         recognitionJob = viewModelScope.launch {
             Recognizer.listen().collect { ev ->
                 _recognition.value = ev
+                if (ev is RecognitionEvent.Found) launch { useSpotifyCover(ev.track) }
             }
         }
     }
@@ -176,6 +178,28 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         stopListening()
         _recognition.value = null
     }
+
+    /**
+     * Swaps Shazam's cover for the matching Spotify album image when signed in to Spotify.
+     * Without a sign-in, Shazam's cover is used at its largest size.
+     */
+    private suspend fun useSpotifyCover(found: RecognizedTrack) {
+        val match = runCatching {
+            spotifyCatalog.findMatch(TrackQuery(found.title, found.artist, found.album))
+        }.getOrNull()
+        val cover = match?.coverUrl ?: largerShazamCover(found.coverUrl)
+        if (cover == found.coverUrl && match == null) return
+        fun RecognizedTrack.upgrade() =
+            if (title == found.title && artist == found.artist) copy(coverUrl = cover, spotifyTrackId = match?.trackId) else this
+        (_recognition.value as? RecognitionEvent.Found)?.let { _recognition.value = RecognitionEvent.Found(it.track.upgrade()) }
+        _recognized.value = _recognized.value?.upgrade()
+    }
+
+    /** Shazam covers come from Apple's image CDN, which serves larger sizes on request. */
+    private fun largerShazamCover(url: String?): String? =
+        url?.replace(Regex("""/(\d{2,4})x(\d{2,4})(cc|bb)\.(jpg|png|webp)$"""), "/1000x1000$3.$4")
+
+    private val spotifyCatalog = SpotifyLyricsProvider()
 
     /** "Lyrics" pressed on a recognition result. */
     fun showRecognizedLyrics(track: RecognizedTrack) {

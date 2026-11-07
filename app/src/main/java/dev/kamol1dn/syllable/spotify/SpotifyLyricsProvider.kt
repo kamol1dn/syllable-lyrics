@@ -13,6 +13,8 @@ import okhttp3.Request
 import org.json.JSONObject
 import java.io.IOException
 
+data class SpotifyMatch(val trackId: String, val coverUrl: String?)
+
 /** Spotify's own lyrics (the ones shown in the Spotify app). Requires signing in under Settings. */
 class SpotifyLyricsProvider : LyricsProvider {
     override val name = "Spotify"
@@ -54,12 +56,16 @@ class SpotifyLyricsProvider : LyricsProvider {
         return parse(JSONObject(body))
     }
 
-    private suspend fun search(token: String, query: TrackQuery): String? {
+    private suspend fun search(token: String, query: TrackQuery): String? =
+        searchTrack(token, query)?.optString("id")?.ifEmpty { null }
+
+    /** Best Spotify catalog match for [query], as the raw track object from the search API. */
+    internal suspend fun searchTrack(token: String, query: TrackQuery): JSONObject? {
         val q = Net.enc("track:${query.title} artist:${TextMatch.primaryArtist(query.artist)}")
         val body = authedGet("https://api.spotify.com/v1/search?q=$q&type=track&limit=8", token, webPlayer = false)
             ?: return null
         val items = JSONObject(body).optJSONObject("tracks")?.optJSONArray("items") ?: return null
-        var best: String? = null
+        var best: JSONObject? = null
         var bestScore = 0.0
         for (i in 0 until items.length()) {
             val t = items.getJSONObject(i)
@@ -68,10 +74,32 @@ class SpotifyLyricsProvider : LyricsProvider {
                 if (artists != null) for (j in 0 until artists.length()) add(artists.getJSONObject(j).optString("name"))
             }.joinToString(", ")
             val s = TextMatch.score(query, t.optString("name"), names, t.optLong("duration_ms"))
-            if (s > bestScore) { bestScore = s; best = t.optString("id") }
+            if (s > bestScore) { bestScore = s; best = t }
         }
         return best
     }
+
+    /** Finds the matching Spotify track and its largest album image. Needs a Spotify sign-in. */
+    suspend fun findMatch(query: TrackQuery): SpotifyMatch? {
+        matchCache[query.cacheKey]?.let { return it }
+        val token = SpotifyAuth.getToken() ?: return null
+        val track = try {
+            searchTrack(token, query)
+        } catch (e: AuthException) {
+            SpotifyAuth.invalidateToken()
+            searchTrack(SpotifyAuth.getToken() ?: return null, query)
+        } ?: return null
+        val images = track.optJSONObject("album")?.optJSONArray("images")
+        var cover: String? = null
+        var width = -1
+        if (images != null) for (i in 0 until images.length()) {
+            val img = images.getJSONObject(i)
+            if (img.optInt("width") > width) { width = img.optInt("width"); cover = img.optString("url") }
+        }
+        return SpotifyMatch(track.optString("id"), cover?.ifEmpty { null }).also { matchCache[query.cacheKey] = it }
+    }
+
+    private val matchCache = java.util.concurrent.ConcurrentHashMap<String, SpotifyMatch>()
 
     fun parse(root: JSONObject): Lyrics? {
         val ly = root.optJSONObject("lyrics") ?: return null

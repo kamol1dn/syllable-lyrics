@@ -25,7 +25,7 @@ class NetEaseProvider : LyricsProvider {
         val lrc = o.optJSONObject("lrc")?.optString("lyric").orEmpty()
         if (yrc.isNotBlank()) parseYrc(yrc, lrc)?.let { return it }
         if (lrc.isNotBlank()) {
-            // NetEase pads instrumental songs with "纯音乐，请欣赏" — treat as no lyrics.
+            // NetEase pads instrumental songs with "纯音乐，请欣赏", so treat it as no lyrics.
             if (lrc.contains("纯音乐")) return null
             return LrcParser.parse(stripCredits(lrc), name)
         }

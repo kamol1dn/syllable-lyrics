@@ -1,38 +1,52 @@
 # Syllable
 
-Word-by-word synced lyrics for Android, for whatever is playing.
+Syllable is an Android app that shows the lyrics of the song you're listening to and highlights each word as it's sung.
 
-- **From the media notification** — grant notification access and Syllable follows any player (Spotify, YouTube Music, Chrome, …): title, artist and the live playback position come from the active media session. Tap a line to seek, control playback from the bottom bar.
-- **From the microphone** — tap the listen button to identify a song playing around you (Shazam-style), then press **Lyrics**. The match offset is used to start the lyrics in sync; pause or nudge them if needed.
-- **Word-level lyrics** — every word fills in as it's sung, with a soft wipe, a slight lift, blurred upcoming lines and an artwork-coloured animated background.
+<p>
+  <img src="docs/screenshots/now-playing.jpg" width="240" alt="Lyrics for the song playing, with the current word lighting up">
+  <img src="docs/screenshots/listen.jpg" width="240" alt="Listening for a song through the mic">
+  <img src="docs/screenshots/settings.jpg" width="240" alt="Settings, with Spotify sign-in and lyrics sources">
+</p>
 
-## Lyrics sources
+<img src="docs/screenshots/landscape.jpg" width="732" alt="Landscape: album art and controls on the left, lyrics on the right">
 
-Queried in parallel; real word timing beats line timing beats plain text.
+The song in the screenshots is "Amazing Grace", whose words are in the public domain. The cover is a test image.
+
+## Features
+
+- **Now playing.** Give Syllable notification access and it picks up the song from any music app (Spotify, YouTube Music, Chrome and others), along with how far into the song you are. Tap a line to jump to it. The bar at the bottom has play, pause and skip.
+- **Identify a song.** Tap the listen button and Syllable uses the mic to find the song playing near you, like Shazam. Then press **Lyrics**. The lyrics start at the right spot. If they drift, you can pause them or shift them earlier or later.
+- **Word by word.** Each word fills in as it's sung, and long notes glow. Lines move in a soft wave as the song goes on.
+- **Moving background.** The album art is blurred into a slowly flowing gradient, like the Spicy Lyrics extension for Spotify. It slows down when the music is paused. For songs found with the mic, Syllable uses Spotify's album art when you're signed in.
+- **Landscape.** Turn your phone sideways to see the album art and controls next to the lyrics.
+
+## Where the lyrics come from
+
+Syllable asks all of these at the same time and picks the best result. It prefers lyrics with timing for each word, then lyrics timed by line, then plain text.
 
 | Source | Timing | Notes |
 | --- | --- | --- |
-| Spotify | syllable / line | Optional. **Settings → Log in with Spotify** (in-app web sign-in; the web-player token is captured and refreshed automatically). |
-| Musixmatch | word ("richsync") / line | Anonymous desktop-app token; sometimes rate-limited. |
-| NetEase Cloud Music | word (YRC) / line | Good coverage of western and Asian music. |
-| LRCLIB | line (sometimes word) | Always on. |
+| Spotify | Word or line | Optional. Sign in from **Settings → Log in with Spotify**. Syllable keeps you signed in. |
+| Musixmatch | Word or line | Works without an account. It sometimes stops answering for a while. |
+| NetEase Cloud Music | Word or line | Has lots of Western and Asian songs. |
+| LRCLIB | Line, sometimes word | Always on. |
 
-When only line timing exists, word timing inside each line is estimated from word length.
+If a song only has line timing, Syllable guesses when each word is sung from its length.
 
 ## Song recognition
 
-`ShazamSignature.kt` is a Kotlin port of the open-source, reverse-engineered Shazam fingerprint (SongRec / shazamio). A unit test checks it is byte-identical to the Python reference on a fixed test signal. Recording is 16 kHz mono; recognition is retried at 4 s, 8 s and 12 s.
+`ShazamSignature.kt` is a Kotlin version of the open-source Shazam fingerprint code from SongRec and shazamio. A unit test checks that it gives exactly the same output as the Python version on a test signal. Syllable records at 16 kHz mono and tries to find a match after 4, 8 and 12 seconds.
 
 ## Build
 
-Requires JDK 17+ and the Android SDK (compileSdk 37).
+You need JDK 17 or newer and the Android SDK (compileSdk 37).
 
 ```bash
 ./gradlew :app:assembleDebug
 ./gradlew :app:testDebugUnitTest
 ```
 
-Release signing reads `keystore.properties` (git-ignored) from the project root:
+Release builds are signed with the key named in `keystore.properties` in the project root. Git ignores this file.
 
 ```properties
 storeFile=release.jks
@@ -41,8 +55,10 @@ keyAlias=syllable
 keyPassword=…
 ```
 
-Without it, release builds fall back to the debug key.
+If the file is missing, release builds use the debug key.
 
 ## Notes
 
-Spotify, Musixmatch, NetEase and Shazam endpoints used here are unofficial and can change or rate-limit without notice. This project isn't affiliated with any of them.
+The background follows the approach of [Kawarp](https://github.com/better-lyrics/kawarp) (MIT), the renderer behind Spicy Lyrics' background. On Android 12 and older, the blurred art turns slowly instead.
+
+Syllable uses unofficial Spotify, Musixmatch, NetEase and Shazam endpoints. They can change or limit requests at any time. This project isn't connected to any of these companies.

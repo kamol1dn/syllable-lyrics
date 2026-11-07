@@ -9,9 +9,17 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -25,6 +33,26 @@ import dev.kamol1dn.syllable.spotify.SpotifyLoginActivity
 import dev.kamol1dn.syllable.ui.SyllableTheme
 
 enum class Screen { MAIN, LISTEN, SETTINGS }
+
+/** Settings slides in from the side; Listen zooms in like a focused mode. Going back reverses it. */
+private fun screenTransition(from: Screen, to: Screen): ContentTransform {
+    val forward = to != Screen.MAIN
+    val other = if (forward) to else from
+    val ease = tween<Float>(380, easing = FastOutSlowInEasing)
+    val slide = tween<IntOffset>(380, easing = FastOutSlowInEasing)
+    return when (other) {
+        Screen.SETTINGS -> if (forward) {
+            (slideInHorizontally(slide) { it / 4 } + fadeIn(ease)) togetherWith (scaleOut(ease, targetScale = 0.96f) + fadeOut(ease))
+        } else {
+            (scaleIn(ease, initialScale = 0.96f) + fadeIn(ease)) togetherWith (slideOutHorizontally(slide) { it / 4 } + fadeOut(ease))
+        }
+        else -> if (forward) {
+            (scaleIn(ease, initialScale = 0.9f) + fadeIn(ease)) togetherWith (scaleOut(ease, targetScale = 1.06f) + fadeOut(ease))
+        } else {
+            (scaleIn(ease, initialScale = 1.06f) + fadeIn(ease)) togetherWith (scaleOut(ease, targetScale = 0.9f) + fadeOut(ease))
+        }
+    }
+}
 
 class MainActivity : ComponentActivity() {
     private val vm: MainViewModel by viewModels()
@@ -45,7 +73,7 @@ class MainActivity : ComponentActivity() {
                 }
                 AnimatedContent(
                     targetState = screen,
-                    transitionSpec = { fadeIn() togetherWith fadeOut() },
+                    transitionSpec = { screenTransition(initialState, targetState) },
                     label = "screen",
                 ) { s ->
                     when (s) {

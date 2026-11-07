@@ -52,8 +52,8 @@ class SpotifyLoginActivity : ComponentActivity() {
             addView(status, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         }
         val hint = TextView(this).apply {
-            text = "Google/Apple/Facebook sign-in may be blocked inside apps — use your email or username " +
-                "(or the emailed 6-digit code)."
+            text = "Google, Apple and Facebook sign-in may not work here. Use your email or username, " +
+                "or ask Spotify to email you a 6-digit code."
             setTextColor(Color.argb(150, 255, 255, 255))
             textSize = 12f
             setPadding(dp(16), 0, dp(16), dp(8))
