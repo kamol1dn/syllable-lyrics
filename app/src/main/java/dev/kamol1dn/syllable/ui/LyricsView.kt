@@ -55,6 +55,8 @@ import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
@@ -70,6 +72,7 @@ import dev.kamol1dn.syllable.lyrics.LyricLine
 import dev.kamol1dn.syllable.lyrics.LyricWord
 import dev.kamol1dn.syllable.lyrics.Lyrics
 import dev.kamol1dn.syllable.lyrics.SyncType
+import dev.kamol1dn.syllable.lyrics.wordGroups
 import kotlinx.coroutines.delay
 import kotlin.math.PI
 import kotlin.math.abs
@@ -88,9 +91,8 @@ private sealed interface Row {
     val endMs: Long
     data class Line(val line: LyricLine, override val startMs: Long, override val endMs: Long) : Row
     data class Gap(override val startMs: Long, override val endMs: Long) : Row
-    /** Where the lyrics came from, as the last thing in the list. Never becomes active. */
-    data class Credits(val lyrics: Lyrics) : Row {
-        override val startMs = Long.MAX_VALUE
+    /** Where the lyrics came from, as the last thing in the list. Takes over once the last line is done. */
+    data class Credits(val lyrics: Lyrics, override val startMs: Long = Long.MAX_VALUE) : Row {
         override val endMs = Long.MAX_VALUE
     }
 }
@@ -103,9 +105,12 @@ private fun buildRows(lyrics: Lyrics): List<Row> {
     lyrics.lines.forEachIndexed { i, l ->
         val next = lyrics.lines.getOrNull(i + 1)
         rows += Row.Line(l, l.startMs, l.endMs)
-        if (next != null && next.startMs - l.endMs > 5_000) rows += Row.Gap(l.endMs + 400, next.startMs)
+        // Line-synced ends are a guess from the word count, so a held line stays up at least 7 s before the dots.
+        val end = if (lyrics.sync == SyncType.WORD) l.endMs else maxOf(l.endMs, l.startMs + 7_000)
+        if (next != null && next.startMs - end > 5_000) rows += Row.Gap(end + 400, next.startMs)
     }
-    rows += Row.Credits(lyrics)
+    val lastEnd = maxOf(lyrics.lines.maxOf { it.endMs }, lyrics.lines.last().startMs)
+    rows += Row.Credits(lyrics, lastEnd + 1_500)
     return rows
 }
 
@@ -182,11 +187,18 @@ fun LyricsView(
             val a = active
             if (a <= 0) emptySet() else {
                 val p = pos.longValue
-                ((a - 1) downTo maxOf(0, a - 4)).filter { i ->
+                ((a - 1) downTo maxOf(0, a - 2)).filter { i ->
                     val r = rows[i]
-                    r is Row.Line && r.startMs <= p && p < r.endMs
+                    r is Row.Line && r.startMs <= p && p < maxOf(r.line.leadEnd(), r.line.bgEnd())
                 }.toSet()
             }
+        }
+    }
+    // Keep an older line in view while its main vocal is still going.
+    val scrollTarget by remember(rows) {
+        derivedStateOf {
+            val p = pos.longValue
+            stillSung.filter { (rows[it] as Row.Line).line.leadEnd() > p }.minOrNull() ?: active
         }
     }
 
@@ -216,7 +228,7 @@ fun LyricsView(
                 drawRect(
                     Brush.verticalGradient(
                         0f to Color.Transparent,
-                        0.07f to Color.Black,
+                        0.14f to Color.Black,
                         0.82f to Color.Black,
                         1f to Color.Transparent,
                     ),
@@ -225,9 +237,9 @@ fun LyricsView(
             },
     ) {
         val viewport = with(LocalDensity.current) { maxHeight.toPx() }
-        LaunchedEffect(active, userBrowsing, viewport) {
+        LaunchedEffect(scrollTarget, userBrowsing, viewport) {
             if (!synced || userBrowsing || dragged) return@LaunchedEffect
-            val target = max(active, 0)
+            val target = max(scrollTarget, 0)
             val info = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == target }
             if (info == null) {
                 kicks.value = emptyList()
@@ -257,7 +269,8 @@ fun LyricsView(
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             itemsIndexed(rows, key = { i, _ -> i }) { i, row ->
-                val isActive = i == active || i in stillSung
+                val lingering = i != active && i in stillSung
+                val isActive = i == active || lingering
                 val distance = if (active < 0) 0 else abs(i - active)
                 Box(
                     Modifier.graphicsLayer {
@@ -266,11 +279,12 @@ fun LyricsView(
                 ) {
                     when (row) {
                         is Row.Gap -> GapDots(row, pos, isActive, horizontalPadding)
-                        is Row.Credits -> CreditsView(row.lyrics, horizontalPadding)
+                        is Row.Credits -> CreditsView(row.lyrics, isActive, horizontalPadding)
                         is Row.Line -> LineView(
                             line = row.line,
                             synced = synced,
                             isActive = isActive,
+                            lingering = lingering,
                             isPast = active >= 0 && i < active && !isActive,
                             distance = distance,
                             pos = pos,
@@ -291,6 +305,7 @@ private fun LineView(
     line: LyricLine,
     synced: Boolean,
     isActive: Boolean,
+    lingering: Boolean,
     isPast: Boolean,
     distance: Int,
     pos: State<Long>,
@@ -299,22 +314,38 @@ private fun LineView(
     horizontalPadding: Dp,
     onClick: (() -> Unit)?,
 ) {
+    // A line kept up only by its background vocal lets its main line fade once that's sung.
+    val leadEnd = line.leadEnd()
+    val leadDone by remember(line, lingering) { derivedStateOf { lingering && pos.value >= leadEnd + 150 } }
+    val leadLit = isActive && !leadDone
     val scale = animateFloatAsState(
-        if (isActive || !synced) 1f else 0.955f,
+        if (leadLit || !synced) 1f else 0.955f,
         spring(dampingRatio = 0.75f, stiffness = Spring.StiffnessLow),
         label = "scale",
     )
-    // Inactive lines fade with the layer alpha; the active line draws its own per-word alpha.
-    val alpha = animateFloatAsState(
+    // Unlit lines fade as a whole; a lit line draws its own per-word fill.
+    val leadAlpha = animateFloatAsState(
         when {
             !synced -> 0.9f
-            isActive -> 1f
-            isPast -> PAST
+            leadLit -> 1f
+            isPast || leadDone -> PAST
             else -> DIM
         },
-        tween(if (isActive) 120 else 700),
-        label = "alpha",
+        tween(if (leadLit) 120 else 700),
+        label = "leadAlpha",
     )
+    val bgAlpha = animateFloatAsState(
+        when {
+            !synced -> 0.72f
+            isActive -> 1f
+            isPast -> PAST * 0.8f
+            else -> DIM * 0.8f
+        },
+        tween(if (isActive) 120 else 700),
+        label = "bgAlpha",
+    )
+    val groups = remember(line) { wordGroups(line.words) }
+    val bgGroups = remember(line) { wordGroups(line.background) }
     val blurTarget = if (blur && !isActive && Build.VERSION.SDK_INT >= 31) distance.coerceAtMost(5) * 1.1f else 0f
     val blurDp = animateFloatAsState(blurTarget, tween(500), label = "blur")
     val density = LocalDensity.current
@@ -339,12 +370,15 @@ private fun LineView(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .then(if (onClick != null) Modifier.clickable(onClickLabel = "Play from here", onClick = onClick) else Modifier)
+            // One node per line for TalkBack, instead of one per word.
+            .clearAndSetSemantics {
+                contentDescription = if (line.background.isEmpty()) line.text else "${line.text}, ${line.backgroundText}"
+            }
             .padding(horizontal = horizontalPadding, vertical = 9.dp)
             .graphicsLayer {
                 scaleX = scale.value; scaleY = scale.value
                 transformOrigin = TransformOrigin(if (end) 1f else 0f, 0.5f)
-                this.alpha = if (isActive) 1f else alpha.value
                 val r = with(density) { blurDp.value.dp.toPx() }
                 renderEffect = if (r > 0.5f && Build.VERSION.SDK_INT >= 31) BlurEffect(r, r, TileMode.Decal) else null
             },
@@ -354,20 +388,27 @@ private fun LineView(
             horizontalAlignment = if (end) Alignment.End else Alignment.Start,
         ) {
             val arrangement = if (end) Arrangement.End else Arrangement.Start
-            if (!isActive || !synced) {
-                Text(line.text, style = style)
+            // Synced lines always use the same word layout, so the wrap doesn't change when a line lights up.
+            if (!synced) {
+                Text(line.text, style = style, modifier = Modifier.graphicsLayer { alpha = leadAlpha.value })
             } else {
-                FlowRow(horizontalArrangement = arrangement) {
-                    line.words.forEach { w -> WordView(w, pos, style) }
+                FlowRow(
+                    horizontalArrangement = arrangement,
+                    modifier = Modifier.graphicsLayer { alpha = if (leadLit) 1f else leadAlpha.value },
+                ) {
+                    groups.forEach { WordGroup(it, pos, style, lit = leadLit) }
                 }
             }
             if (line.background.isNotEmpty()) {
                 Spacer(Modifier.height(2.dp))
-                if (!isActive || !synced) {
-                    Text(line.backgroundText, style = bgStyle, modifier = Modifier.graphicsLayer { this.alpha = 0.8f })
+                if (!synced) {
+                    Text(line.backgroundText, style = bgStyle, modifier = Modifier.graphicsLayer { alpha = bgAlpha.value })
                 } else {
-                    FlowRow(horizontalArrangement = arrangement) {
-                        line.background.forEach { w -> WordView(w, pos, bgStyle) }
+                    FlowRow(
+                        horizontalArrangement = arrangement,
+                        modifier = Modifier.graphicsLayer { alpha = if (isActive) 1f else bgAlpha.value },
+                    ) {
+                        bgGroups.forEach { WordGroup(it, pos, bgStyle, lit = isActive) }
                     }
                 }
             }
@@ -375,12 +416,13 @@ private fun LineView(
     }
 }
 
-/** "Lyrics from …" plus the people who made the sync, linked to their pages. */
+/** "From …" plus the people who made the sync, linked to their pages. */
 @Composable
-private fun CreditsView(lyrics: Lyrics, horizontalPadding: Dp) {
+private fun CreditsView(lyrics: Lyrics, active: Boolean, horizontalPadding: Dp) {
+    val alpha by animateFloatAsState(if (active) 0.8f else 0.65f, tween(700), label = "credits")
     val link = TextLinkStyles(SpanStyle(color = Color.White.copy(alpha = 0.85f), fontWeight = FontWeight.SemiBold))
     val text = buildAnnotatedString {
-        append("Lyrics from ")
+        append("From ")
         append(lyrics.source)
         lyrics.credits.forEachIndexed { i, c ->
             append(if (i == 0) " · " else ", ")
@@ -391,20 +433,35 @@ private fun CreditsView(lyrics: Lyrics, horizontalPadding: Dp) {
     }
     Text(
         text,
-        style = TextStyle(fontSize = 13.sp, lineHeight = 18.sp, color = Color.White.copy(alpha = 0.5f)),
+        style = TextStyle(fontSize = 13.sp, lineHeight = 18.sp, color = Color.White.copy(alpha = alpha)),
         modifier = Modifier.padding(horizontal = horizontalPadding, vertical = 28.dp),
     )
 }
 
 /**
- * One word: a soft left-to-right "sung" wipe and a small lift. Held words (sung for a long time)
+ * The syllables of one word, kept on one line. A lit word lifts as one piece while it's sung;
+ * an unlit one is plain text in the same layout.
+ */
+@Composable
+private fun WordGroup(g: List<LyricWord>, pos: State<Long>, style: TextStyle, lit: Boolean) {
+    val lift = with(LocalDensity.current) { 3.dp.toPx() }
+    val span = remember(g) { LyricWord("", g.first().startMs, g.last().endMs) }
+    Row(if (lit) Modifier.graphicsLayer { translationY = -lift * easeOutCubic(progress(span, pos.value)) } else Modifier) {
+        g.forEach { w -> if (lit) WordView(w, pos, style) else Text(w.text, style = style, softWrap = false, maxLines = 1) }
+    }
+}
+
+private fun LyricLine.leadEnd(): Long = words.lastOrNull()?.endMs ?: endMs
+private fun LyricLine.bgEnd(): Long = background.lastOrNull()?.endMs ?: Long.MIN_VALUE
+
+/**
+ * One syllable: a soft left-to-right "sung" wipe. Held words (sung for a long time)
  * also swell slightly and glow while they last.
  */
 @Composable
 private fun WordView(word: LyricWord, pos: State<Long>, style: TextStyle) {
     val density = LocalDensity.current
     val feather = with(density) { 16.dp.toPx() }
-    val lift = with(density) { 3.dp.toPx() }
     val held = word.endMs - word.startMs >= 900 && word.text.trim().length >= 2
     val glowRadius = with(density) { 7.dp.toPx() }
 
@@ -421,7 +478,6 @@ private fun WordView(word: LyricWord, pos: State<Long>, style: TextStyle) {
                     val s = 1f + 0.035f * g
                     scaleX = s; scaleY = s
                     transformOrigin = TransformOrigin(0.5f, 1f)
-                    translationY = -lift * easeOutCubic(p)
                     renderEffect = BlurEffect(glowRadius, glowRadius, TileMode.Decal)
                 },
             )
@@ -433,7 +489,6 @@ private fun WordView(word: LyricWord, pos: State<Long>, style: TextStyle) {
             modifier = Modifier
                 .graphicsLayer {
                     val p = progress(word, pos.value)
-                    translationY = -lift * easeOutCubic(p)
                     if (held) {
                         val s = 1f + 0.035f * swell(p)
                         scaleX = s; scaleY = s

@@ -55,11 +55,25 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Lyrics
-import androidx.compose.material3.Button
+import androidx.activity.compose.LocalActivity
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.paneTitle
+import androidx.compose.ui.semantics.semantics
+import androidx.core.app.ActivityCompat
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import kotlinx.coroutines.flow.drop
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -83,26 +97,56 @@ import dev.kamol1dn.syllable.MainViewModel
 import dev.kamol1dn.syllable.recognition.RecognitionEvent
 
 @Composable
-fun ListenScreen(vm: MainViewModel, onBack: () -> Unit, onShowLyrics: () -> Unit) {
+fun ListenScreen(vm: MainViewModel, onBack: () -> Unit, onShowLyrics: () -> Unit, entry: Int = 0) {
     val context = LocalContext.current
+    val activity = LocalActivity.current
     val event by vm.recognition.collectAsStateWithLifecycle()
+    var micDenied by rememberSaveable { mutableStateOf(false) }
+    var canAskAgain by rememberSaveable { mutableStateOf(true) }
 
+    fun hasMic() = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) vm.startListening()
-    }
-    fun start() {
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+        if (granted) {
+            micDenied = false
             vm.startListening()
         } else {
-            permission.launch(Manifest.permission.RECORD_AUDIO)
+            micDenied = true
+            canAskAgain = activity?.let { ActivityCompat.shouldShowRequestPermissionRationale(it, Manifest.permission.RECORD_AUDIO) } ?: false
         }
     }
+    fun start() {
+        when {
+            hasMic() -> { micDenied = false; vm.startListening() }
+            micDenied && !canAskAgain -> openAppInfo(context)
+            else -> permission.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+    // Coming back from app settings with the mic turned on starts listening.
+    LifecycleResumeEffect(Unit) {
+        if (micDenied && hasMic()) { micDenied = false; vm.startListening() }
+        onPauseOrDispose { }
+    }
     // Opening this screen starts listening right away, like tapping the Shazam button.
-    LaunchedEffect(Unit) { if (event == null) start() }
-    DisposableEffect(Unit) { onDispose { vm.stopListening() } }
+    LaunchedEffect(entry) { if (vm.recognition.value == null && !micDenied) start() }
+    // Rotating keeps recording; leaving the screen stops it.
+    DisposableEffect(Unit) { onDispose { if (activity?.isChangingConfigurations != true) vm.stopListening() } }
+
+    // A short buzz when a song is found or nothing is.
+    val haptic = LocalHapticFeedback.current
+    LaunchedEffect(Unit) {
+        var prev: RecognitionEvent? = vm.recognition.value
+        snapshotFlow { event }.drop(1).collect { e ->
+            when {
+                e is RecognitionEvent.Found && prev !is RecognitionEvent.Found -> haptic.performHapticFeedback(HapticFeedbackType.Confirm)
+                e == RecognitionEvent.NoMatch || e is RecognitionEvent.Failed -> haptic.performHapticFeedback(HapticFeedbackType.Reject)
+            }
+            prev = e
+        }
+    }
 
     // Once a song is found, its cover becomes the background.
-    val cover = rememberCoverBitmap((event as? RecognitionEvent.Found)?.track?.coverUrl)
+    val found = (event as? RecognitionEvent.Found)?.track
+    val cover = rememberCoverBitmap(found?.coverUrl, found?.let { "${it.artist}|${it.title}" })
     ArtBackground(if (event is RecognitionEvent.Found) cover else null) {
         BoxWithConstraints(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
             val wide = isWideLayout(maxWidth, maxHeight)
@@ -127,8 +171,8 @@ fun ListenScreen(vm: MainViewModel, onBack: () -> Unit, onShowLyrics: () -> Unit
                             onLyrics = { vm.showRecognizedLyrics(e.track); onShowLyrics() },
                             onAgain = ::start,
                         )
-                        else -> ListeningButton(e, wide, maxH, onTap = {
-                            if (e is RecognitionEvent.Listening) vm.stopListening() else start()
+                        else -> ListeningButton(e, wide, maxH, micDenied, canAskAgain, onTap = {
+                            if (e is RecognitionEvent.Listening || e is RecognitionEvent.Matching) vm.stopListening() else start()
                         })
                     }
                 }
@@ -138,8 +182,10 @@ fun ListenScreen(vm: MainViewModel, onBack: () -> Unit, onShowLyrics: () -> Unit
 }
 
 @Composable
-private fun ListeningButton(e: RecognitionEvent?, wide: Boolean, maxH: Dp, onTap: () -> Unit) {
-    val listening = e is RecognitionEvent.Listening
+private fun ListeningButton(e: RecognitionEvent?, wide: Boolean, maxH: Dp, micDenied: Boolean, canAskAgain: Boolean, onTap: () -> Unit) {
+    // The rings keep moving while the song is looked up.
+    val listening = e is RecognitionEvent.Listening || e is RecognitionEvent.Matching
+    val showDenied = micDenied && !listening
     val level by animateFloatAsState(
         (e as? RecognitionEvent.Listening)?.level ?: 0f,
         spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMedium),
@@ -150,30 +196,55 @@ private fun ListeningButton(e: RecognitionEvent?, wide: Boolean, maxH: Dp, onTap
     val idle by t.animateFloat(0f, 1f, infiniteRepeatable(tween(2400), RepeatMode.Reverse), label = "idle")
     val ringSize = if (wide) (maxH - 72.dp).coerceIn(160.dp, 280.dp) else 280.dp
 
-    val title = when (e) {
-        is RecognitionEvent.Listening -> "Listening…"
-        RecognitionEvent.NoMatch -> "No match found"
-        is RecognitionEvent.Failed -> e.message
-        RecognitionEvent.Matching -> "Matching…"
-        else -> "Tap to identify"
+    val title = when {
+        showDenied -> "Mic access is off"
+        e is RecognitionEvent.Listening -> "Listening…"
+        e == RecognitionEvent.Matching -> "Matching…"
+        e == RecognitionEvent.NoMatch -> "No match found"
+        e is RecognitionEvent.Failed -> when (e.reason) {
+            RecognitionEvent.Failed.Reason.MIC -> "Can't use the mic"
+            RecognitionEvent.Failed.Reason.OFFLINE -> "No internet connection"
+            RecognitionEvent.Failed.Reason.SERVICE -> "Can't reach Shazam"
+        }
+        else -> "Tap to identify a song"
     }
-    val subtitle = when (e) {
-        is RecognitionEvent.Listening -> "Hold your phone near the music"
-        RecognitionEvent.NoMatch -> "Get closer to the speaker and try again"
+    val subtitle = when {
+        showDenied && canAskAgain -> "Syllable needs the mic to hear the song around you."
+        showDenied -> "Turn on Microphone in app settings to identify songs."
+        e is RecognitionEvent.Listening -> "Hold your phone near the music. Tap to stop."
+        e == RecognitionEvent.Matching -> "Looking up the song"
+        e == RecognitionEvent.NoMatch -> "Move closer to the speaker, then tap to try again."
+        e is RecognitionEvent.Failed -> when (e.reason) {
+            RecognitionEvent.Failed.Reason.MIC -> "Another app might be using it. Close it and tap to try again."
+            RecognitionEvent.Failed.Reason.OFFLINE -> "Check your connection and tap to try again."
+            RecognitionEvent.Failed.Reason.SERVICE -> "Try again in a moment."
+        }
         else -> " "
     }
 
     @Composable
     fun Texts(align: Alignment.Horizontal, textAlign: TextAlign) {
         Column(horizontalAlignment = align) {
-            AnimatedContent(
-                targetState = title,
-                transitionSpec = { (fadeIn() + slideInVertically { it / 3 }) togetherWith (fadeOut() + slideOutVertically { -it / 3 }) },
-                label = "title",
-            ) { s ->
-                Text(s, color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, textAlign = textAlign)
+            // One stable node that TalkBack reads out whenever the status changes.
+            Column(
+                horizontalAlignment = align,
+                modifier = Modifier.clearAndSetSemantics {
+                    contentDescription = if (subtitle.isBlank()) title else "$title. $subtitle"
+                    liveRegion = LiveRegionMode.Polite
+                },
+            ) {
+                AnimatedContent(
+                    targetState = title,
+                    transitionSpec = { (fadeIn() + slideInVertically { it / 3 }) togetherWith (fadeOut() + slideOutVertically { -it / 3 }) },
+                    label = "title",
+                ) { s ->
+                    Text(s, color = Color.White, style = MaterialTheme.typography.headlineMedium, textAlign = textAlign)
+                }
+                Text(subtitle, color = Color.White.copy(alpha = 0.7f), modifier = Modifier.padding(top = 6.dp), textAlign = textAlign)
             }
-            Text(subtitle, color = Color.White.copy(alpha = 0.65f), modifier = Modifier.padding(top = 6.dp), textAlign = textAlign)
+            if (showDenied) {
+                SecondaryButton(if (canAskAgain) "Allow mic" else "Open settings", onTap, Modifier.padding(top = 16.dp))
+            }
         }
     }
 
@@ -203,10 +274,11 @@ private fun ListeningButton(e: RecognitionEvent?, wide: Boolean, maxH: Dp, onTap
                     .graphicsLayer { val s = 1f + level * 0.07f; scaleX = s; scaleY = s }
                     .size(ringSize * 0.57f).clip(CircleShape)
                     .background(Brush.linearGradient(listOf(Accent, AccentViolet)))
-                    .clickable(interactionSource = interaction, indication = null, onClick = onTap),
+                    .clickable(interactionSource = interaction, indication = null, role = Role.Button, onClick = onTap)
+                    .semantics { contentDescription = if (listening) "Stop listening" else "Identify song" },
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(Icons.Rounded.GraphicEq, "Listen", tint = Color.White, modifier = Modifier.size(ringSize * 0.3f))
+                Icon(Icons.Rounded.GraphicEq, null, tint = Color.White, modifier = Modifier.size(ringSize * 0.3f))
             }
         }
     }
@@ -250,32 +322,26 @@ private fun ResultCard(e: RecognitionEvent.Found, wide: Boolean, maxH: Dp, onLyr
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = Modifier.size(artSize).graphicsLayer { scaleX = artScale; scaleY = artScale }
-                .clip(RoundedCornerShape(18.dp)).background(Color.White.copy(alpha = 0.08f)),
+                .clip(MaterialTheme.shapes.medium).background(Color.White.copy(alpha = 0.08f)),
         )
     }
 
     @Composable
     fun Info(align: Alignment.Horizontal, textAlign: TextAlign) {
         Column(Modifier.graphicsLayer { alpha = textAlpha; translationY = (1 - textAlpha) * 24f }, horizontalAlignment = align) {
-            Text(t.title, color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, textAlign = textAlign)
+            Text(t.title, color = Color.White, style = MaterialTheme.typography.headlineMedium, textAlign = textAlign)
             Text(t.artist, color = Color.White.copy(alpha = 0.75f), fontSize = 18.sp, textAlign = textAlign)
             t.album?.let { Text(it, color = Color.White.copy(alpha = 0.5f), fontSize = 14.sp, textAlign = textAlign) }
             Spacer(Modifier.height(if (wide) 20.dp else 32.dp))
-            Button(onClick = onLyrics, modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(16.dp)) {
-                Icon(Icons.Rounded.Lyrics, null)
-                Spacer(Modifier.width(8.dp))
-                Text("Lyrics", fontWeight = FontWeight.Bold, fontSize = 17.sp)
-            }
-            Spacer(Modifier.height(10.dp))
-            OutlinedButton(onClick = onAgain, modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(14.dp)) {
-                Text("Listen again", color = Color.White)
-            }
+            PrimaryButton("Show lyrics", onLyrics, Modifier.fillMaxWidth(), icon = Icons.Rounded.Lyrics)
+            Spacer(Modifier.height(12.dp))
+            SecondaryButton("Listen again", onAgain, Modifier.fillMaxWidth())
         }
     }
 
     if (wide) {
         Row(
-            Modifier.fillMaxSize().padding(horizontal = 32.dp, vertical = 8.dp),
+            Modifier.semantics { paneTitle = "${t.title} by ${t.artist}" }.fillMaxSize().padding(horizontal = 32.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center,
         ) {
@@ -285,7 +351,7 @@ private fun ResultCard(e: RecognitionEvent.Found, wide: Boolean, maxH: Dp, onLyr
         }
     } else {
         Column(
-            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(28.dp),
+            Modifier.semantics { paneTitle = "${t.title} by ${t.artist}" }.fillMaxSize().verticalScroll(rememberScrollState()).padding(28.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {

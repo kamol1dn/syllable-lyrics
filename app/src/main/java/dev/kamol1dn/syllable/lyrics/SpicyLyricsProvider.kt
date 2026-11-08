@@ -20,17 +20,31 @@ class SpicyLyricsProvider(
     private companion object {
         const val BASE = "https://api.spicylyrics.org"
         val SPOTIFY_ID = Regex("^[0-9A-Za-z]{22}$")
+        val CONFIDENT = setOf("exact", "likely")
     }
 
     override suspend fun fetch(query: TrackQuery): Lyrics? {
         val key = apiKey()?.trim()?.ifEmpty { null } ?: return null
-        val id = query.spotifyTrackId?.takeIf { SPOTIFY_ID.matches(it) }
-            ?: runCatching { spotifyIdLookup(query) }.getOrNull()
-            ?: search(key, query)
-            ?: return null
-        val body = get(key, "$BASE/v1/lyrics/$id") ?: return null
-        return parse(JSONObject(body))
+        val tried = HashSet<String>()
+        // The player's own Spotify id is exact, so try it first.
+        query.spotifyTrackId?.takeIf { SPOTIFY_ID.matches(it) }?.let { id ->
+            tried += id
+            lyricsFor(key, id)?.let { return it }
+        }
+        // A Spotify lookup can land on another release of the song that Spicy has no sync for,
+        // so Spicy's own search still gets a turn before giving up.
+        runCatching { spotifyIdLookup(query) }.getOrNull()?.takeIf { tried.add(it) }?.let { id ->
+            lyricsFor(key, id)?.let { return it }
+        }
+        for (id in search(key, query)) {
+            if (!tried.add(id)) continue
+            lyricsFor(key, id)?.let { return it }
+        }
+        return null
     }
+
+    private suspend fun lyricsFor(key: String, id: String): Lyrics? =
+        get(key, "$BASE/v1/lyrics/$id")?.let { parse(JSONObject(it)) }
 
     /** GET with one retry when the API says it is busy (503). 404 gives null. */
     private suspend fun get(key: String, url: String): String? {
@@ -44,7 +58,8 @@ class SpicyLyricsProvider(
         return null
     }
 
-    private suspend fun search(key: String, query: TrackQuery): String? {
+    /** Ids of confident matches (exact or likely), best first. Other versions have different timing, so they're left out. */
+    private suspend fun search(key: String, query: TrackQuery): List<String> {
         val url = buildString {
             append("$BASE/v1/tracks/search?limit=3")
             append("&title=").append(Net.enc(query.title))
@@ -52,11 +67,12 @@ class SpicyLyricsProvider(
             query.album?.takeIf { it.isNotBlank() }?.let { append("&album=").append(Net.enc(it)) }
             query.durationMs?.takeIf { it > 0 }?.let { append("&duration=").append("%.3f".format(java.util.Locale.US, it / 1000.0)) }
         }
-        val body = get(key, url) ?: return null
-        val results = JSONObject(body).optJSONObject("Body")?.optJSONArray("results") ?: return null
-        val first = results.optJSONObject(0) ?: return null
-        // A different version of a song has different timing, so only take confident matches.
-        return first.optString("id").takeIf { first.optString("tier") in setOf("exact", "likely") && it.isNotEmpty() }
+        val body = get(key, url) ?: return emptyList()
+        val results = JSONObject(body).optJSONObject("Body")?.optJSONArray("results") ?: return emptyList()
+        return (0 until results.length()).mapNotNull { i ->
+            val r = results.optJSONObject(i) ?: return@mapNotNull null
+            r.optString("id").takeIf { it.isNotEmpty() && r.optString("tier") in CONFIDENT }
+        }
     }
 
     fun parse(root: JSONObject): Lyrics? {

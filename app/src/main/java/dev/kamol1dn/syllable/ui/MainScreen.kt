@@ -41,6 +41,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -52,16 +53,42 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Bluetooth
+import androidx.compose.material.icons.rounded.Cast
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Headphones
+import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.rounded.PhoneAndroid
+import androidx.compose.material.icons.rounded.Usb
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
-import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.TextButton
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import dev.kamol1dn.syllable.spotify.SpotifyAuth
+import kotlinx.coroutines.delay
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
@@ -93,8 +120,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.kamol1dn.syllable.LyricsState
 import dev.kamol1dn.syllable.MainViewModel
 import dev.kamol1dn.syllable.Mode
+import dev.kamol1dn.syllable.Timing
 import dev.kamol1dn.syllable.TrackInfo
 import dev.kamol1dn.syllable.lyrics.SyncType
+import dev.kamol1dn.syllable.media.OutputKind
 
 /** True when the window is wide enough to show the track panel beside the lyrics. */
 fun isWideLayout(width: Dp, height: Dp) = width > height && width >= 560.dp
@@ -111,14 +140,14 @@ fun Modifier.pressScale(interaction: MutableInteractionSource): Modifier = compo
 }
 
 @Composable
-fun MainScreen(vm: MainViewModel, onListen: () -> Unit, onSettings: () -> Unit) {
+fun MainScreen(vm: MainViewModel, onListen: () -> Unit, onSettings: () -> Unit, onSpotifyLogin: () -> Unit) {
     val context = LocalContext.current
     val track by vm.track.collectAsStateWithLifecycle()
     val lyricsState by vm.lyrics.collectAsStateWithLifecycle()
     val hasAccess by vm.media.hasAccess.collectAsStateWithLifecycle()
 
     // Artwork: from the media session, or downloaded for a recognised song.
-    val remoteArt = rememberCoverBitmap(track?.coverUrl)
+    val remoteArt = rememberCoverBitmap(track?.coverUrl, track?.key)
     val artwork = track?.artwork ?: remoteArt
     var showSync by rememberSaveable { mutableStateOf(false) }
     val t = track
@@ -127,14 +156,51 @@ fun MainScreen(vm: MainViewModel, onListen: () -> Unit, onSettings: () -> Unit) 
     val mode by vm.mode.collectAsStateWithLifecycle()
     val clockPaused by vm.clockPaused.collectAsStateWithLifecycle()
     val playing = if (mode == Mode.RECOGNIZED) !clockPaused else np?.isPlaying ?: true
+    val settings by vm.settings.state.collectAsStateWithLifecycle()
+
+    // A song found with the mic has no player to say it ended, so offer the next step 30 s after the last line.
+    val loaded = lyricsState as? LyricsState.Loaded
+    val end = loaded?.lyrics?.takeIf { it.sync != SyncType.NONE }?.lines?.lastOrNull()?.endMs
+    val songOver by produceState(false, mode, end) {
+        value = false
+        if (mode != Mode.RECOGNIZED || end == null) return@produceState
+        while (true) {
+            value = vm.positionMs() > end + 30_000
+            delay(1_000)
+        }
+    }
+
+    // Keep the screen on only while synced lyrics are actually playing.
+    val view = LocalView.current
+    val keepOn = settings.keepScreenOn && loaded != null && loaded.lyrics.sync != SyncType.NONE && playing && !songOver
+    DisposableEffect(view, keepOn) {
+        view.keepScreenOn = keepOn
+        onDispose { view.keepScreenOn = false }
+    }
+
+    // The timing controls only make sense for synced lyrics.
+    val canSync = when (val st = lyricsState) {
+        is LyricsState.Loaded -> st.lyrics.sync != SyncType.NONE
+        LyricsState.NotFound, LyricsState.Offline -> false
+        else -> true // loading between songs: don't blink
+    }
+    LaunchedEffect(canSync) { if (!canSync) showSync = false }
+    val notFound = lyricsState is LyricsState.NotFound || lyricsState is LyricsState.Offline
 
     ArtBackground(artwork, playing = playing) {
         BoxWithConstraints(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
             val wide = isWideLayout(maxWidth, maxHeight)
             val boxW = maxWidth
             val boxH = maxHeight
+            AnimatedContent(
+                targetState = t,
+                contentKey = { it == null },
+                transitionSpec = { fadeIn(tween(400, delayMillis = 100)) togetherWith fadeOut(tween(250)) },
+                modifier = Modifier.fillMaxSize(),
+                label = "layout",
+            ) { shown ->
             when {
-                t == null -> Column(Modifier.fillMaxSize()) {
+                shown == null -> Column(Modifier.fillMaxSize()) {
                     Row(
                         Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -144,11 +210,7 @@ fun MainScreen(vm: MainViewModel, onListen: () -> Unit, onSettings: () -> Unit) 
                     }
                     EmptyState(
                         hasAccess = hasAccess,
-                        onGrant = {
-                            context.startActivity(
-                                Intent(AndroidSettings.ACTION_NOTIFICATION_LISTENER_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                            )
-                        },
+                        onGrant = { openNotificationAccess(context) },
                         onListen = onListen,
                         modifier = Modifier.weight(1f),
                     )
@@ -156,30 +218,30 @@ fun MainScreen(vm: MainViewModel, onListen: () -> Unit, onSettings: () -> Unit) 
                 wide -> Row(Modifier.fillMaxSize()) {
                     val recognized by vm.recognized.collectAsStateWithLifecycle()
                     val np by vm.nowPlaying.collectAsStateWithLifecycle()
-                    val chipsVisible = recognized != null && np != null
+                    val chipsVisible = recognized != null
                     Column(
                         Modifier.width((boxW * 0.38f).coerceIn(280.dp, 420.dp)).fillMaxHeight()
                             .padding(start = 24.dp, end = 8.dp, top = 12.dp, bottom = 8.dp),
                     ) {
                         val artSize by animateDpAsState(
-                            (boxH - 196.dp - (if (showSync) 52.dp else 0.dp) - (if (chipsVisible) 44.dp else 0.dp)).coerceIn(56.dp, 240.dp),
+                            (boxH - 196.dp - (if (showSync) 90.dp else 0.dp) - (if (chipsVisible) 44.dp else 0.dp)).coerceIn(56.dp, 240.dp),
                             spring(stiffness = Spring.StiffnessLow),
                             label = "art",
                         )
                         Row(verticalAlignment = Alignment.Top) {
-                            Artwork(artwork, artSize, 16.dp) { vm.media.openPlayerApp() }
+                            Artwork(artwork, artSize, MaterialTheme.shapes.medium, if (np != null) ({ vm.media.openPlayerApp() }) else null)
                             Spacer(Modifier.weight(1f))
                             Column { ActionIcons(onListen, onSettings) }
                         }
                         Spacer(Modifier.height(14.dp))
-                        TrackText(t, lyricsState, titleSize = 20.sp)
+                        TrackText(shown, lyricsState, titleSize = 20.sp)
                         ModeChips(vm, Modifier.padding(top = 10.dp))
                         Spacer(Modifier.weight(1f))
                         SyncSection(vm, showSync, compact = true)
-                        Controls(vm, showSync, onToggleSync = { showSync = !showSync }, onListen = onListen)
+                        Controls(vm, showSync, canSync, notFound, onToggleSync = { showSync = !showSync }, onListen = onListen)
                     }
                     LyricsArea(
-                        vm, lyricsState, onListen,
+                        vm, lyricsState, onListen, onSpotifyLogin, songOver,
                         modifier = Modifier.weight(1f).fillMaxHeight(),
                         horizontalPadding = 20.dp,
                         anchorFraction = 0.26f,
@@ -190,16 +252,17 @@ fun MainScreen(vm: MainViewModel, onListen: () -> Unit, onSettings: () -> Unit) 
                         Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Artwork(artwork, 52.dp, 10.dp) { vm.media.openPlayerApp() }
+                        Artwork(artwork, 52.dp, MaterialTheme.shapes.small, if (np != null) ({ vm.media.openPlayerApp() }) else null)
                         Spacer(Modifier.width(12.dp))
-                        TrackText(t, lyricsState, titleSize = 17.sp, modifier = Modifier.weight(1f))
+                        TrackText(shown, lyricsState, titleSize = 17.sp, modifier = Modifier.weight(1f))
                         ActionIcons(onListen, onSettings)
                     }
                     ModeChips(vm, Modifier.padding(start = 20.dp, top = 8.dp))
-                    LyricsArea(vm, lyricsState, onListen, modifier = Modifier.weight(1f).fillMaxWidth())
+                    LyricsArea(vm, lyricsState, onListen, onSpotifyLogin, songOver, modifier = Modifier.weight(1f).fillMaxWidth().padding(top = 8.dp))
                     SyncSection(vm, showSync, compact = false)
-                    Controls(vm, showSync, onToggleSync = { showSync = !showSync }, onListen = onListen)
+                    Controls(vm, showSync, canSync, notFound, onToggleSync = { showSync = !showSync }, onListen = onListen)
                 }
+            }
             }
         }
     }
@@ -212,10 +275,11 @@ private fun ActionIcons(onListen: () -> Unit, onSettings: () -> Unit) {
 }
 
 @Composable
-private fun Artwork(artwork: Bitmap?, size: Dp, corner: Dp, onClick: () -> Unit) {
+private fun Artwork(artwork: Bitmap?, size: Dp, shape: Shape, onClick: (() -> Unit)?) {
     Box(
-        Modifier.size(size).clip(RoundedCornerShape(corner)).background(Color.White.copy(alpha = 0.12f))
-            .clickable(onClick = onClick),
+        Modifier.size(size).clip(shape).background(Color.White.copy(alpha = 0.12f))
+            .semantics { contentDescription = "Album art" }
+            .then(if (onClick != null) Modifier.clickable(onClickLabel = "Open player app", role = Role.Button, onClick = onClick) else Modifier),
         contentAlignment = Alignment.Center,
     ) {
         Crossfade(artwork, animationSpec = tween(600), label = "art") { art ->
@@ -245,7 +309,7 @@ private fun TrackText(track: TrackInfo, lyricsState: LyricsState, titleSize: and
         ) { tr ->
             Column {
                 Text(tr.title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = titleSize, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Text(tr.artist, color = Color.White.copy(alpha = 0.7f), fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(tr.artist, color = Color.White.copy(alpha = 0.8f), fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
         SourceLabel(lyricsState)
@@ -257,10 +321,15 @@ private fun ModeChips(vm: MainViewModel, modifier: Modifier) {
     val recognized by vm.recognized.collectAsStateWithLifecycle()
     val np by vm.nowPlaying.collectAsStateWithLifecycle()
     val mode by vm.mode.collectAsStateWithLifecycle()
-    AnimatedVisibility(recognized != null && np != null, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
-        Row(modifier, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ModeChip("Now playing", mode == Mode.NOW_PLAYING) { vm.setMode(Mode.NOW_PLAYING) }
+    AnimatedVisibility(recognized != null, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
+        Row(modifier, horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (np != null) ModeChip("Now playing", mode == Mode.NOW_PLAYING) { vm.setMode(Mode.NOW_PLAYING) }
             ModeChip("Identified", mode == Mode.RECOGNIZED) { vm.setMode(Mode.RECOGNIZED) }
+            if (mode == Mode.RECOGNIZED) {
+                IconButton(onClick = vm::clearRecognized, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Rounded.Close, "Close identified song", tint = Color.White.copy(alpha = 0.8f), modifier = Modifier.size(18.dp))
+                }
+            }
         }
     }
 }
@@ -270,6 +339,8 @@ private fun LyricsArea(
     vm: MainViewModel,
     lyricsState: LyricsState,
     onListen: () -> Unit,
+    onSpotifyLogin: () -> Unit,
+    songOver: Boolean,
     modifier: Modifier,
     horizontalPadding: Dp = 24.dp,
     anchorFraction: Float = 0.3f,
@@ -277,6 +348,7 @@ private fun LyricsArea(
     val np by vm.nowPlaying.collectAsStateWithLifecycle()
     val mode by vm.mode.collectAsStateWithLifecycle()
     val settings by vm.settings.state.collectAsStateWithLifecycle()
+    val spotify by SpotifyAuth.state.collectAsStateWithLifecycle()
     AnimatedContent(
         targetState = lyricsState,
         contentKey = { if (it is LyricsState.Loaded) it.lyrics else it::class },
@@ -288,73 +360,175 @@ private fun LyricsArea(
         label = "lyrics",
     ) { s ->
         when (s) {
-            is LyricsState.Loaded -> LyricsView(
-                lyrics = s.lyrics,
-                position = vm::positionMs,
-                onSeek = if (mode == Mode.RECOGNIZED || np?.canSeek == true) vm::seekToLyric else null,
-                textScale = settings.textScale,
-                blurInactive = settings.blurInactive,
-                modifier = Modifier.fillMaxSize(),
-                horizontalPadding = horizontalPadding,
-                anchorFraction = anchorFraction,
-            )
+            is LyricsState.Loaded -> Box(Modifier.fillMaxSize()) {
+                LyricsView(
+                    lyrics = s.lyrics,
+                    position = vm::positionMs,
+                    onSeek = if (mode == Mode.RECOGNIZED || np?.canSeek == true) vm::seekToLyric else null,
+                    textScale = settings.textScale,
+                    blurInactive = settings.blurInactive,
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalPadding = horizontalPadding,
+                    anchorFraction = anchorFraction,
+                )
+                // The lyrics stay underneath, so scrolling and tap-to-seek still work.
+                AnimatedVisibility(
+                    songOver, Modifier.align(Alignment.BottomCenter),
+                    enter = fadeIn() + slideInVertically { it / 3 }, exit = fadeOut(),
+                ) {
+                    Column(
+                        Modifier.padding(24.dp).clip(MaterialTheme.shapes.medium).background(Color.Black.copy(alpha = 0.35f)).padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Text("That's the end of the song", color = Color.White, fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.height(12.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Button(onClick = onListen, colors = ButtonDefaults.buttonColors(containerColor = AccentButton, contentColor = Color.White)) {
+                                Text("Identify another")
+                            }
+                            OutlineButton(onClick = vm::clearRecognized) { Text("Close") }
+                        }
+                    }
+                }
+            }
             LyricsState.Loading, LyricsState.Idle -> Searching(horizontalPadding)
-            LyricsState.NotFound -> NotFound(onRetry = vm::retryLyrics, onListen = onListen)
+            LyricsState.NotFound -> NotFound(
+                spotifyOn = settings.useSpotify,
+                signedIn = spotify.signedIn,
+                onRetry = vm::retryLyrics,
+                onListen = onListen,
+                onSpotifyLogin = onSpotifyLogin,
+                onUseSpotify = {
+                    vm.settings.update { it.copy(useSpotify = true) }
+                    if (!spotify.signedIn) onSpotifyLogin()
+                },
+            )
+            LyricsState.Offline -> Offline(onRetry = vm::retryLyrics)
         }
     }
 }
 
 @Composable
 private fun SyncSection(vm: MainViewModel, show: Boolean, compact: Boolean) {
-    val nudge by vm.nudge.collectAsStateWithLifecycle()
+    val timing by vm.timing.collectAsStateWithLifecycle()
     AnimatedVisibility(
         show,
         enter = expandVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(),
         exit = shrinkVertically(tween(250)) + fadeOut(tween(200)),
     ) {
-        SyncBar(nudge, compact, onNudge = vm::nudge)
+        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+            SyncBar(timing.offsetMs, compact, onNudge = vm::nudge)
+            TimingTarget(timing, onReset = vm::resetTiming)
+        }
     }
 }
 
+/** Says which device the timing is saved for, so it's clear it will come back next time. */
 @Composable
-private fun Controls(vm: MainViewModel, showSync: Boolean, onToggleSync: () -> Unit, onListen: () -> Unit) {
-    val np by vm.nowPlaying.collectAsStateWithLifecycle()
-    val mode by vm.mode.collectAsStateWithLifecycle()
-    val clockPaused by vm.clockPaused.collectAsStateWithLifecycle()
+private fun TimingTarget(timing: Timing, onReset: () -> Unit) {
+    val out = timing.output
+    val icon = when (out?.kind) {
+        null -> Icons.Rounded.Mic
+        OutputKind.PHONE -> Icons.Rounded.PhoneAndroid
+        OutputKind.WIRED -> Icons.Rounded.Headphones
+        OutputKind.USB -> Icons.Rounded.Usb
+        OutputKind.BLUETOOTH -> Icons.Rounded.Bluetooth
+        OutputKind.REMOTE -> Icons.Rounded.Cast
+    }
+    val label = when {
+        out == null -> "Timing for this song"
+        timing.isDefault && out.kind == OutputKind.BLUETOOTH -> "${out.name} · Bluetooth default"
+        timing.isDefault -> out.name
+        else -> "Saved for ${out.name}"
+    }
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
+        Modifier.padding(top = 6.dp).heightIn(min = 32.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        IconButton(onClick = onToggleSync) {
-            Icon(Icons.Rounded.Timer, "Adjust sync", tint = if (showSync) Accent else Color.White.copy(alpha = 0.8f))
+        Icon(icon, null, tint = Color.White.copy(alpha = 0.6f), modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(6.dp))
+        Crossfade(label, label = "timingTarget") { text ->
+            Text(
+                text, color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 240.dp),
+            )
         }
-        val player = np
-        if (mode == Mode.NOW_PLAYING && player != null) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { vm.media.previous() }) { Icon(Icons.Rounded.SkipPrevious, "Previous", tint = Color.White, modifier = Modifier.size(32.dp)) }
-                PlayButton(playing = player.isPlaying, label = "Play/pause") { vm.media.playPause() }
-                IconButton(onClick = { vm.media.next() }) { Icon(Icons.Rounded.SkipNext, "Next", tint = Color.White, modifier = Modifier.size(32.dp)) }
-            }
-        } else if (mode == Mode.RECOGNIZED) {
-            PlayButton(playing = !clockPaused, label = "Pause lyrics") { vm.toggleClock() }
-        }
-        IconButton(onClick = if (mode == Mode.RECOGNIZED) onListen else vm::retryLyrics) {
-            Icon(
-                if (mode == Mode.RECOGNIZED) Icons.Rounded.GraphicEq else Icons.Rounded.Refresh,
-                if (mode == Mode.RECOGNIZED) "Listen again to fix timing" else "Reload lyrics",
-                tint = Color.White.copy(alpha = 0.8f),
+        AnimatedVisibility(!timing.isDefault, enter = fadeIn(), exit = fadeOut()) {
+            Text(
+                "Reset",
+                color = Accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(start = 4.dp).clip(RoundedCornerShape(50))
+                    .clickable(onClick = onReset).padding(horizontal = 8.dp, vertical = 6.dp),
             )
         }
     }
 }
 
 @Composable
-private fun PlayButton(playing: Boolean, label: String, onClick: () -> Unit) {
+private fun Controls(
+    vm: MainViewModel,
+    showSync: Boolean,
+    canSync: Boolean,
+    notFound: Boolean,
+    onToggleSync: () -> Unit,
+    onListen: () -> Unit,
+) {
+    val np by vm.nowPlaying.collectAsStateWithLifecycle()
+    val mode by vm.mode.collectAsStateWithLifecycle()
+    val clockPaused by vm.clockPaused.collectAsStateWithLifecycle()
+    val timing by vm.timing.collectAsStateWithLifecycle()
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        SideSlot(visible = canSync) {
+            IconButton(onClick = onToggleSync) {
+                // Pink while open, or while a timing change is in use.
+                Icon(
+                    Icons.Rounded.Tune, if (showSync) "Hide timing" else "Adjust timing",
+                    tint = if (showSync || !timing.isDefault) Accent else Color.White.copy(alpha = 0.8f),
+                )
+            }
+        }
+        val player = np
+        if (mode == Mode.NOW_PLAYING && player != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { vm.media.previous() }) { Icon(Icons.Rounded.SkipPrevious, "Previous", tint = Color.White, modifier = Modifier.size(32.dp)) }
+                PlayButton(playing = player.isPlaying, playLabel = "Play", pauseLabel = "Pause") { vm.media.playPause() }
+                IconButton(onClick = { vm.media.next() }) { Icon(Icons.Rounded.SkipNext, "Next", tint = Color.White, modifier = Modifier.size(32.dp)) }
+            }
+        } else if (mode == Mode.RECOGNIZED) {
+            PlayButton(playing = !clockPaused, playLabel = "Resume lyrics", pauseLabel = "Pause lyrics") { vm.toggleClock() }
+        }
+        // Hidden when nothing was found, since the "Search again" button below the message does the same.
+        SideSlot(visible = mode == Mode.RECOGNIZED || !notFound) {
+            IconButton(onClick = if (mode == Mode.RECOGNIZED) onListen else vm::retryLyrics) {
+                Icon(
+                    if (mode == Mode.RECOGNIZED) Icons.Rounded.GraphicEq else Icons.Rounded.Refresh,
+                    if (mode == Mode.RECOGNIZED) "Listen again to fix timing" else "Reload lyrics",
+                    tint = Color.White.copy(alpha = 0.8f),
+                )
+            }
+        }
+    }
+}
+
+/** Keeps its 48dp slot when hidden, so the play button stays centred. */
+@Composable
+private fun SideSlot(visible: Boolean, content: @Composable () -> Unit) {
+    Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+        AnimatedVisibility(visible, enter = fadeIn(), exit = fadeOut()) { content() }
+    }
+}
+
+@Composable
+private fun PlayButton(playing: Boolean, playLabel: String, pauseLabel: String, onClick: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     Box(
         Modifier.pressScale(interaction).size(58.dp).clip(CircleShape).background(Color.White)
-            .clickable(interactionSource = interaction, indication = null, onClick = onClick),
+            .clickable(interactionSource = interaction, indication = null, role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = if (playing) pauseLabel else playLabel },
         contentAlignment = Alignment.Center,
     ) {
         AnimatedContent(
@@ -365,7 +539,7 @@ private fun PlayButton(playing: Boolean, label: String, onClick: () -> Unit) {
             },
             label = "play",
         ) { p ->
-            Icon(if (p) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, label, tint = Color.Black, modifier = Modifier.size(32.dp))
+            Icon(if (p) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, null, tint = Color.Black, modifier = Modifier.size(32.dp))
         }
     }
 }
@@ -374,16 +548,24 @@ private fun PlayButton(playing: Boolean, label: String, onClick: () -> Unit) {
 private fun SourceLabel(state: LyricsState) {
     val text = when (state) {
         is LyricsState.Loaded -> when (state.lyrics.sync) {
-            SyncType.WORD -> "Word sync · ${state.lyrics.source}"
-            SyncType.LINE -> "Line sync, words guessed · ${state.lyrics.source}"
-            SyncType.NONE -> "Not synced · ${state.lyrics.source}"
-        } + if (!state.final) " · checking more sources…" else ""
+            SyncType.WORD -> "Word timing · ${state.lyrics.source}"
+            SyncType.LINE -> "Line timing · ${state.lyrics.source}"
+            SyncType.NONE -> "Plain lyrics · ${state.lyrics.source}"
+        }
         LyricsState.Loading -> "Searching lyrics…"
-        LyricsState.NotFound -> "No lyrics found"
-        LyricsState.Idle -> ""
+        else -> "" // the message in the middle says it
     }
-    Crossfade(text, label = "source") { s ->
-        if (s.isNotEmpty()) Text(s, color = Color.White.copy(alpha = 0.5f), fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    val pending = state is LyricsState.Loaded && !state.final
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Crossfade(text, label = "source", modifier = Modifier.weight(1f, fill = false)) { s ->
+            if (s.isNotEmpty()) Text(s, color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        AnimatedVisibility(pending, enter = fadeIn(), exit = fadeOut()) {
+            CircularProgressIndicator(
+                Modifier.padding(start = 6.dp).size(10.dp).semantics { contentDescription = "Checking more sources" },
+                color = Color.White.copy(alpha = 0.7f), strokeWidth = 1.5.dp,
+            )
+        }
     }
 }
 
@@ -408,30 +590,40 @@ private fun ModeChip(label: String, selected: Boolean, onClick: () -> Unit) {
 
 @Composable
 private fun SyncBar(nudge: Long, compact: Boolean, onNudge: (Long) -> Unit) {
-    Row(
+    val haptic = LocalHapticFeedback.current
+    val buttonMin = if (compact) 88.dp else 104.dp
+    FlowRow(
         Modifier.fillMaxWidth().padding(horizontal = if (compact) 0.dp else 20.dp),
         horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        itemVerticalAlignment = Alignment.CenterVertically,
     ) {
-        OutlinedButton(onClick = { onNudge(-250) }, contentPadding = PaddingValues(horizontal = 14.dp)) {
-            Text(if (compact) "−0.25s" else "Later −0.25s", color = Color.White)
-        }
+        OutlineButton(
+            onClick = { haptic.performHapticFeedback(HapticFeedbackType.SegmentTick); onNudge(-250) },
+            modifier = Modifier.widthIn(min = buttonMin), contentPadding = PaddingValues(horizontal = 14.dp),
+        ) { Text("Later", maxLines = 1, softWrap = false) }
         AnimatedContent(
             targetState = nudge,
             transitionSpec = {
                 val up = targetState > initialState
                 (slideInVertically { if (up) it else -it } + fadeIn()) togetherWith (slideOutVertically { if (up) -it else it } + fadeOut())
             },
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.widthIn(min = if (compact) 112.dp else 132.dp).clearAndSetSemantics {
+                contentDescription = if (nudge == 0L) "No timing change" else "Timing " + formatOffset(nudge, unit = " seconds")
+                liveRegion = LiveRegionMode.Polite
+            },
             label = "nudge",
         ) { n ->
             Text(
-                "%+.2fs".format(n / 1000f),
-                color = Color.White, modifier = Modifier.padding(horizontal = 12.dp), fontWeight = FontWeight.Bold,
+                formatOffset(n), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp,
+                textAlign = TextAlign.Center, maxLines = 1, modifier = Modifier.padding(horizontal = 8.dp),
             )
         }
-        OutlinedButton(onClick = { onNudge(250) }, contentPadding = PaddingValues(horizontal = 14.dp)) {
-            Text(if (compact) "+0.25s" else "Earlier +0.25s", color = Color.White)
-        }
+        OutlineButton(
+            onClick = { haptic.performHapticFeedback(HapticFeedbackType.SegmentTick); onNudge(250) },
+            modifier = Modifier.widthIn(min = buttonMin), contentPadding = PaddingValues(horizontal = 14.dp),
+        ) { Text("Earlier", maxLines = 1, softWrap = false) }
     }
 }
 
@@ -455,19 +647,46 @@ private fun Searching(horizontalPadding: Dp) {
 }
 
 @Composable
-private fun NotFound(onRetry: () -> Unit, onListen: () -> Unit) {
+private fun NotFound(
+    spotifyOn: Boolean,
+    signedIn: Boolean,
+    onRetry: () -> Unit,
+    onListen: () -> Unit,
+    onSpotifyLogin: () -> Unit,
+    onUseSpotify: () -> Unit,
+) {
+    val (body, extra) = when {
+        !spotifyOn -> "Spotify lyrics are turned off. Turning them on might find this song." to ("Use Spotify lyrics" to onUseSpotify)
+        !signedIn -> "Spotify has lyrics for many songs the other sources miss." to ("Sign in to Spotify" to onSpotifyLogin)
+        else -> "None of the sources have lyrics for this song yet." to null
+    }
     CenteredScroll {
-        Text("No lyrics found", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        Text("No lyrics found", color = Color.White, style = MaterialTheme.typography.headlineMedium, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(8.dp))
+        Text(body, color = Color.White.copy(alpha = 0.7f), textAlign = TextAlign.Center)
+        Spacer(Modifier.height(20.dp))
+        PrimaryButton("Identify with the mic", onListen, Modifier.fillMaxWidth(), icon = Icons.Rounded.GraphicEq)
+        Spacer(Modifier.height(12.dp))
+        SecondaryButton("Search again", onRetry, Modifier.fillMaxWidth())
+        if (extra != null) {
+            TextButton(onClick = extra.second, modifier = Modifier.padding(top = 8.dp)) {
+                Text(extra.first, color = Accent, fontWeight = FontWeight.SemiBold)
+            }
+        }
+    }
+}
+
+@Composable
+private fun Offline(onRetry: () -> Unit) {
+    CenteredScroll {
+        Text("Can't load lyrics", color = Color.White, style = MaterialTheme.typography.headlineMedium, textAlign = TextAlign.Center)
         Spacer(Modifier.height(8.dp))
         Text(
-            "Try again, or sign in to Spotify in Settings for more lyrics.",
+            "Check your connection. Lyrics load again once you're back online.",
             color = Color.White.copy(alpha = 0.7f), textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(20.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            OutlinedButton(onClick = onRetry) { Text("Retry", color = Color.White) }
-            Button(onClick = onListen) { Text("Identify with mic") }
-        }
+        SecondaryButton("Try again", onRetry, Modifier.fillMaxWidth())
     }
 }
 
@@ -484,32 +703,36 @@ private fun CenteredScroll(modifier: Modifier = Modifier, content: @Composable (
 
 @Composable
 private fun EmptyState(hasAccess: Boolean, onGrant: () -> Unit, onListen: () -> Unit, modifier: Modifier) {
+    val context = LocalContext.current
+    var asked by rememberSaveable { mutableStateOf(false) }
+    val fromFile = remember { installedFromFile(context) }
     CenteredScroll(modifier) {
         Text(
             if (hasAccess) "Play something" else "Lyrics for whatever's playing",
-            color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.Center,
+            color = Color.White, style = MaterialTheme.typography.headlineMedium, textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(10.dp))
         Text(
             if (hasAccess) "Start a song in Spotify, YouTube Music, or any player and the lyrics show up here, word by word."
             else "Allow notification access so Syllable can see the song in your media notification and follow along word by word.",
-            color = Color.White.copy(alpha = 0.72f), textAlign = TextAlign.Center, fontSize = 15.sp,
+            color = Color.White.copy(alpha = 0.7f), textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(28.dp))
         if (!hasAccess) {
-            Button(onClick = onGrant, modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(14.dp)) {
-                Text("Allow notification access", fontWeight = FontWeight.Bold)
-            }
-            Spacer(Modifier.height(12.dp))
+            PrimaryButton("Allow notification access", { asked = true; onGrant() }, Modifier.fillMaxWidth())
+            Text(
+                "Android will warn that Syllable can read all your notifications. Syllable only checks which song is playing.",
+                style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.6f),
+                textAlign = TextAlign.Center, modifier = Modifier.padding(top = 8.dp),
+            )
+            // Apps installed from an APK file need one more step on Android 13 and later.
+            AnimatedVisibility(asked && fromFile) { RestrictedSettingsHint(Modifier.padding(top = 10.dp)) }
+            Spacer(Modifier.height(16.dp))
         }
-        OutlinedButton(onClick = onListen, modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(14.dp)) {
-            Icon(Icons.Rounded.GraphicEq, null, tint = Color.White)
-            Spacer(Modifier.width(8.dp))
-            Text("Identify a song with the mic", color = Color.White)
-        }
+        SecondaryButton("Identify a song with the mic", onListen, Modifier.fillMaxWidth(), icon = Icons.Rounded.GraphicEq)
         Text(
             "Works with music playing around you, like Shazam.",
-            color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp).alpha(0.9f),
+            style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.6f), modifier = Modifier.padding(top = 8.dp),
         )
     }
 }

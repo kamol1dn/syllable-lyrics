@@ -37,6 +37,8 @@ data class NowPlaying(
     val updateRealtime: Long,
     val speed: Float,
     val canSeek: Boolean,
+    /** Playing on another device through Cast or Spotify Connect, not from this phone. */
+    val isRemote: Boolean = false,
 ) {
     fun livePosition(now: Long = SystemClock.elapsedRealtime()): Long =
         if (isPlaying) positionMs + ((now - updateRealtime) * speed).toLong() else positionMs
@@ -154,8 +156,15 @@ class MediaSessionTracker(private val context: Context) {
             updateRealtime = st?.lastPositionUpdateTime?.takeIf { it > 0 } ?: SystemClock.elapsedRealtime(),
             speed = st?.playbackSpeed?.takeIf { it > 0f } ?: 1f,
             canSeek = st != null && (st.actions and PlaybackState.ACTION_SEEK_TO) != 0L,
+            isRemote = c.playbackInfo?.playbackType == MediaController.PlaybackInfo.PLAYBACK_TYPE_REMOTE,
         )
     }
+
+    /** The player's name as shown in the launcher, or its package name if it can't be read. */
+    fun appName(packageName: String): String = runCatching {
+        val pm = context.packageManager
+        pm.getApplicationLabel(pm.getApplicationInfo(packageName, 0)).toString()
+    }.getOrDefault(packageName)
 
     fun playPause() {
         val c = active ?: return

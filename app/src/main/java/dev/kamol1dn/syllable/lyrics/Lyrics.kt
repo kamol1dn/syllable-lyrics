@@ -3,6 +3,28 @@ package dev.kamol1dn.syllable.lyrics
 /** One sung word (or syllable). [text] includes any trailing space so a line can be rebuilt by concatenation. */
 data class LyricWord(val text: String, val startMs: Long, val endMs: Long)
 
+/**
+ * Joins the syllables of one word ("Wan" + "na ") so a line can only wrap between words.
+ * CJK characters each stand on their own, since those lines can wrap anywhere.
+ */
+fun wordGroups(ws: List<LyricWord>): List<List<LyricWord>> {
+    val out = mutableListOf<List<LyricWord>>()
+    var cur = mutableListOf<LyricWord>()
+    ws.forEachIndexed { i, w ->
+        cur += w
+        val last = w.text.lastOrNull()
+        val next = ws.getOrNull(i + 1)?.text?.firstOrNull()
+        val boundary = last == null || last.isWhitespace() || LrcParser.isCjk(last) ||
+            next == null || next.isWhitespace() || LrcParser.isCjk(next)
+        if (boundary) {
+            out += cur
+            cur = mutableListOf()
+        }
+    }
+    if (cur.isNotEmpty()) out += cur
+    return out
+}
+
 data class LyricLine(
     val startMs: Long,
     val endMs: Long,

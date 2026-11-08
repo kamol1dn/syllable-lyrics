@@ -73,6 +73,8 @@ class LyricsRepository(context: Context, private val settings: Settings) {
     sealed interface Progress {
         data class Found(val lyrics: Lyrics, val final: Boolean) : Progress
         data object NotFound : Progress
+        /** Every source that answered failed with an error, so the phone is probably offline. */
+        data object Offline : Progress
     }
 
     fun load(rawQuery: TrackQuery, skipCache: Boolean = false): Flow<Progress> = channelFlow {
@@ -90,18 +92,22 @@ class LyricsRepository(context: Context, private val settings: Settings) {
         }
 
         val list = providers()
-        val results = Channel<Pair<Int, Lyrics?>>(Channel.UNLIMITED)
+        // index, result, and whether the source failed with an error
+        val results = Channel<Triple<Int, Lyrics?, Boolean>>(Channel.UNLIMITED)
         val jobs = list.mapIndexed { i, p ->
             launch(Dispatchers.IO) {
+                var error: Throwable? = null
                 val l = withTimeoutOrNull(30_000) {
                     runCatching { p.fetch(query) }
-                        .onFailure { android.util.Log.w(TAG, "${p.name} failed: $it") }
+                        .onFailure { error = it; android.util.Log.w(TAG, "${p.name} failed: $it") }
                         .getOrNull()
                 }
                 android.util.Log.d(TAG, "${p.name}: ${l?.sync ?: "none"} (${l?.lines?.size ?: 0} lines) for ${query.artist} - ${query.title}")
-                results.send(i to l?.takeIf { !it.isEmpty })
+                results.send(Triple(i, l?.takeIf { !it.isEmpty }, error != null))
             }
         }
+        var failures = 0
+        var misses = 0
         val pending = list.indices.toMutableSet()
         var best: Lyrics? = null
         var bestRank = Int.MIN_VALUE
@@ -122,8 +128,10 @@ class LyricsRepository(context: Context, private val settings: Settings) {
                 send(Progress.Found(current!!, final = false))
                 continue
             }
-            val (i, l) = msg
+            val (i, l, failed) = msg
             pending -= i
+            // Spotify also returns nothing when signed out, so its empty answer says nothing about the network.
+            if (failed) failures++ else if (l == null && list[i] !== spotify) misses++
             if (l != null && rank(l, i) > bestRank) { best = l; bestRank = rank(l, i) }
             if (best != null && pending.all { ceiling(it) < bestRank }) break
         }
@@ -131,12 +139,18 @@ class LyricsRepository(context: Context, private val settings: Settings) {
         best?.let { send(Progress.Found(it, final = true)) }
         val b = best
         if (b == null) {
-            send(Progress.NotFound)
+            send(if (failures > 0 && misses == 0) Progress.Offline else Progress.NotFound)
         } else {
             synchronized(memory) { memory[key] = b }
             if (b.sync != SyncType.NONE) withContext(Dispatchers.IO) { writeDisk(key, b) }
         }
     }.flowOn(Dispatchers.Default) // keep source picking off the busy main thread
+
+    /** Saved songs and their total size. Reads the disk, so call it off the main thread. */
+    fun cacheStats(): Pair<Int, Long> {
+        val files = cacheDir.listFiles()?.filter { it.isFile && !isExpired(it) }.orEmpty()
+        return files.size to files.sumOf { it.length() }
+    }
 
     fun clearCache() {
         synchronized(memory) { memory.clear() }

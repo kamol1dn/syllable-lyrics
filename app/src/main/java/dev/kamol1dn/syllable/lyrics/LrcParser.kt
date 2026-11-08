@@ -124,7 +124,7 @@ object LrcParser {
         return out.filter { it.isNotEmpty() }
     }
 
-    private fun isCjk(c: Char): Boolean {
+    internal fun isCjk(c: Char): Boolean {
         val block = Character.UnicodeBlock.of(c)
         return block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS ||
             block == Character.UnicodeBlock.HIRAGANA ||

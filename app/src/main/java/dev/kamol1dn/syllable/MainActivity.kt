@@ -2,8 +2,8 @@ package dev.kamol1dn.syllable
 
 import android.content.Intent
 import android.os.Bundle
-import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -20,12 +20,17 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.ui.unit.IntOffset
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import dev.kamol1dn.syllable.ui.ListenScreen
 import dev.kamol1dn.syllable.ui.MainScreen
 import dev.kamol1dn.syllable.ui.SettingsScreen
@@ -59,18 +64,25 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        // The app is always dark, so the bar icons stay light even when the phone uses a light theme.
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+        )
         setContent {
             SyllableTheme {
                 var screen by rememberSaveable { mutableStateOf(Screen.MAIN) }
-                val settings by vm.settings.state.collectAsStateWithLifecycle()
-                LaunchedEffect(settings.keepScreenOn) {
-                    if (settings.keepScreenOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                    else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                }
+                // Counts visits to the listen screen, so each visit starts a fresh listen.
+                var listenEntry by rememberSaveable { mutableIntStateOf(0) }
+                val mode by vm.mode.collectAsStateWithLifecycle()
                 BackHandler(enabled = screen != Screen.MAIN) {
                     screen = Screen.MAIN
                 }
+                // Back on the lyrics of a song found with the mic returns to what the phone is playing.
+                BackHandler(enabled = screen == Screen.MAIN && mode == Mode.RECOGNIZED) {
+                    vm.clearRecognized()
+                }
+                val spotifyLogin = { startActivity(Intent(this@MainActivity, SpotifyLoginActivity::class.java)) }
                 AnimatedContent(
                     targetState = screen,
                     transitionSpec = { screenTransition(initialState, targetState) },
@@ -79,20 +91,21 @@ class MainActivity : ComponentActivity() {
                     when (s) {
                         Screen.MAIN -> MainScreen(
                             vm,
-                            onListen = { screen = Screen.LISTEN },
+                            onListen = { vm.resetRecognition(); listenEntry++; screen = Screen.LISTEN },
                             onSettings = { screen = Screen.SETTINGS },
+                            onSpotifyLogin = spotifyLogin,
                         )
+                        // The result stays while the screen fades out; it's cleared on the next visit.
                         Screen.LISTEN -> ListenScreen(
                             vm,
-                            onBack = { vm.resetRecognition(); screen = Screen.MAIN },
+                            onBack = { screen = Screen.MAIN },
                             onShowLyrics = { screen = Screen.MAIN },
+                            entry = listenEntry,
                         )
                         Screen.SETTINGS -> SettingsScreen(
                             vm,
                             onBack = { screen = Screen.MAIN },
-                            onSpotifyLogin = {
-                                startActivity(Intent(this@MainActivity, SpotifyLoginActivity::class.java))
-                            },
+                            onSpotifyLogin = spotifyLogin,
                         )
                     }
                 }
@@ -103,5 +116,18 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         vm.onResume()
+    }
+
+    init {
+        // Some route changes (like picking the phone speaker in the output switcher) send no event,
+        // so check the output every few seconds while Syllable is on screen.
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                while (true) {
+                    delay(3_000)
+                    vm.refreshOutput()
+                }
+            }
+        }
     }
 }

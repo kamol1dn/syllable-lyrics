@@ -1,6 +1,8 @@
 package dev.kamol1dn.syllable.ui
 
 import android.graphics.Bitmap
+import android.util.LruCache
+import kotlinx.coroutines.delay
 import android.graphics.BitmapShader
 import android.graphics.RuntimeShader
 import android.graphics.Shader
@@ -59,17 +61,36 @@ private const val PAUSED_SPEED = 0.1f
 
 /** Loads a cover image from [url] as a software bitmap, so its pixels can be read. */
 @Composable
-fun rememberCoverBitmap(url: String?): Bitmap? {
+fun rememberCoverBitmap(url: String?, key: Any? = url): Bitmap? {
     val context = LocalContext.current
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }
-    LaunchedEffect(url) {
-        if (url == null) { bitmap = null; return@LaunchedEffect }
+    var loadedFor by remember { mutableStateOf<Any?>(null) }
+    LaunchedEffect(url, key) {
+        if (url == null) { bitmap = null; loadedFor = null; return@LaunchedEffect }
         val req = ImageRequest.Builder(context).data(url).allowHardware(false).build()
         val result = (context.imageLoader.execute(req) as? SuccessResult)?.image?.toBitmap()
-        if (result != null) bitmap = result
+        if (result != null) {
+            bitmap = result
+            loadedFor = key
+        } else if (loadedFor != key) {
+            bitmap = null // the new song's cover failed, so don't keep showing the last song's
+        }
     }
     return bitmap
 }
+
+/** Stand-in cover, blurred ahead of time so the first frame already shows it. */
+private val DefaultCover: PreparedCover by lazy { prepareCover(defaultCover()) }
+
+fun warmDefaultCover() {
+    DefaultCover.luminance
+}
+
+/** Recently blurred covers, so a screen that comes back shows its background right away. */
+private val preparedCovers = LruCache<Int, PreparedCover>(6)
+
+/** Last background clock value, so the pattern carries on across screens. */
+private var lastClock = 0f
 
 /**
  * Full-screen background made from [artwork]. It drifts at full speed while [playing] and
@@ -82,17 +103,27 @@ fun ArtBackground(
     playing: Boolean = true,
     content: @Composable BoxScope.() -> Unit,
 ) {
-    var blurred by remember { mutableStateOf<PreparedCover?>(null) }
+    val source = artwork?.takeIf { !it.isRecycled }
+    var blurred by remember {
+        mutableStateOf(source?.let { preparedCovers[it.generationId] } ?: if (artwork == null) DefaultCover else null)
+    }
     LaunchedEffect(artwork) {
-        blurred = withContext(Dispatchers.Default) {
-            runCatching { prepareCover(artwork?.takeIf { !it.isRecycled } ?: defaultCover()) }.getOrNull()
+        val art = artwork?.takeIf { !it.isRecycled }
+        if (art != null) preparedCovers[art.generationId]?.let { blurred = it; return@LaunchedEffect }
+        // Players often send the new title a moment before its artwork; hold the current background through that gap.
+        if (art == null && blurred != null && blurred !== DefaultCover) delay(1_500)
+        blurred = if (art == null) {
+            DefaultCover
+        } else {
+            withContext(Dispatchers.Default) { runCatching { prepareCover(art) }.getOrNull() }
+                ?.also { preparedCovers.put(art.generationId, it) } ?: DefaultCover
         }
     }
     // Brighter covers get a darker veil so white lyrics stay readable.
-    val veil by animateFloatAsState(0.12f + 0.42f * (blurred?.luminance ?: 0.3f), tween(1000), label = "veil")
+    val veil by animateFloatAsState(0.15f + 0.45f * (blurred?.luminance ?: 0.3f), tween(1000), label = "veil")
 
     // Shared clock: speed eases toward its target like Kawarp's, so pausing glides to a halt.
-    val time = remember { mutableFloatStateOf(0f) }
+    val time = remember { mutableFloatStateOf(lastClock) }
     val targetSpeed by rememberUpdatedState(if (playing) PLAYING_SPEED else PAUSED_SPEED)
     LaunchedEffect(Unit) {
         var speed = targetSpeed
@@ -102,12 +133,13 @@ fun ArtBackground(
                 val dt = ((now - last) / 1e9f).coerceAtMost(0.1f)
                 speed += (targetSpeed - speed) * 0.05f
                 time.floatValue += dt * speed
+                lastClock = time.floatValue
             }
             last = now
         }
     }
 
-    Box(modifier.fillMaxSize().background(Color(0xFF120B1C))) {
+    Box(modifier.fillMaxSize().background(AppBg)) {
         Crossfade(blurred?.bitmap, animationSpec = tween(1000), label = "cover") { bmp ->
             if (bmp != null) {
                 if (Build.VERSION.SDK_INT >= 33) FluidLayer(bmp, time) else DriftLayer(bmp, time)
@@ -116,8 +148,11 @@ fun ArtBackground(
         Box(
             Modifier.fillMaxSize().drawBehind {
                 drawRect(
+                    // A darker band at the top keeps the song title and source readable.
                     Brush.verticalGradient(
-                        listOf(Color.Black.copy(alpha = veil), Color.Black.copy(alpha = (veil + 0.15f).coerceAtMost(0.8f))),
+                        0f to Color.Black.copy(alpha = (veil + 0.2f).coerceAtMost(0.8f)),
+                        0.22f to Color.Black.copy(alpha = veil),
+                        1f to Color.Black.copy(alpha = (veil + 0.15f).coerceAtMost(0.8f)),
                     ),
                 )
             },

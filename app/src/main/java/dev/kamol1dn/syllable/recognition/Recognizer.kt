@@ -5,6 +5,7 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.SystemClock
+import android.util.Log
 import dev.kamol1dn.syllable.lyrics.Net
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -16,9 +17,12 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.net.ConnectException
+import java.net.UnknownHostException
 import java.util.Locale
 import java.util.TimeZone
 import java.util.UUID
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.abs
 import kotlin.math.sqrt
 
@@ -40,7 +44,9 @@ sealed interface RecognitionEvent {
     data object Matching : RecognitionEvent
     data class Found(val track: RecognizedTrack) : RecognitionEvent
     data object NoMatch : RecognitionEvent
-    data class Failed(val message: String) : RecognitionEvent
+    data class Failed(val reason: Reason) : RecognitionEvent {
+        enum class Reason { MIC, OFFLINE, SERVICE }
+    }
 }
 
 /** Records from the microphone and asks Shazam's service, retrying with longer samples (4s, 8s, 12s). */
@@ -58,10 +64,10 @@ object Recognizer {
                 AudioFormat.ENCODING_PCM_16BIT, maxOf(minBuf, RATE),
             )
         } catch (e: Exception) {
-            emit(RecognitionEvent.Failed("Microphone unavailable")); return@flow
+            emit(RecognitionEvent.Failed(RecognitionEvent.Failed.Reason.MIC)); return@flow
         }
         if (rec.state != AudioRecord.STATE_INITIALIZED) {
-            rec.release(); emit(RecognitionEvent.Failed("Microphone unavailable")); return@flow
+            rec.release(); emit(RecognitionEvent.Failed(RecognitionEvent.Failed.Reason.MIC)); return@flow
         }
         val total = ShortArray(RATE * 13)
         var n = 0
@@ -86,9 +92,19 @@ object Recognizer {
                     attempt++
                     val sig = ShazamSignature().apply { feed(total, n) }
                     if (sig.peakCount < 10) continue // silence; keep listening
+                    val last = attempt == attemptsAtMs.size
+                    // Only on the last try, so the title doesn't flicker at 4 and 8 seconds.
+                    if (last) emit(RecognitionEvent.Matching)
                     val result = runCatching { ShazamApi.recognize(sig) }
-                    result.exceptionOrNull()?.let {
-                        if (attempt == attemptsAtMs.size) emit(RecognitionEvent.Failed(it.message ?: "Network error"))
+                    val err = result.exceptionOrNull()
+                    if (err is CancellationException) throw err
+                    if (err != null) {
+                        Log.w("Recognizer", "Shazam request failed", err)
+                        val offline = err is UnknownHostException || err is ConnectException
+                        if (offline || last) {
+                            emit(RecognitionEvent.Failed(if (offline) RecognitionEvent.Failed.Reason.OFFLINE else RecognitionEvent.Failed.Reason.SERVICE))
+                            return@flow
+                        }
                     }
                     val match = result.getOrNull()
                     if (match != null) {

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- Themed icon: solid strokes, since themed icons drop transparency. The gap marks the sung part. -->
+    <path android:fillColor="#FFFFFFFF" android:pathData="M32,38h44a4,4 0,0 1,0 8h-44a4,4 0,0 1,0 -8z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M32,50h22v8h-22a4,4 0,0 1,0 -8z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M56,50h20a4,4 0,0 1,0 8h-20z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M32,62h30a4,4 0,0 1,0 8h-30a4,4 0,0 1,0 -8z" />
+</vector>
