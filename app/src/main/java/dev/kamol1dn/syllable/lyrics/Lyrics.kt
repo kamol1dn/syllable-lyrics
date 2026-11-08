@@ -7,9 +7,17 @@ data class LyricLine(
     val startMs: Long,
     val endMs: Long,
     val words: List<LyricWord>,
+    /** Background vocals sung over this line, drawn smaller underneath. */
+    val background: List<LyricWord> = emptyList(),
+    /** Sung by a second singer, so drawn on the right. */
+    val oppositeAligned: Boolean = false,
 ) {
     val text: String get() = words.joinToString("") { it.text }.trim()
+    val backgroundText: String get() = background.joinToString("") { it.text }.trim()
 }
+
+/** A person or service to credit under the lyrics. */
+data class Credit(val label: String, val name: String, val url: String? = null)
 
 enum class SyncType {
     /** Real per-word (or per-syllable) timestamps from the provider. */
@@ -24,6 +32,8 @@ data class Lyrics(
     val lines: List<LyricLine>,
     val sync: SyncType,
     val source: String,
+    /** Shown at the end of the lyrics, as the source asks. */
+    val credits: List<Credit> = emptyList(),
 ) {
     val isEmpty: Boolean get() = lines.isEmpty()
 }

@@ -1,12 +1,14 @@
 package dev.kamol1dn.syllable.lyrics
 
 import android.content.Context
+import android.os.SystemClock
 import dev.kamol1dn.syllable.Settings
 import dev.kamol1dn.syllable.spotify.SpotifyLyricsProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -16,24 +18,39 @@ import java.io.File
 import java.security.MessageDigest
 
 /**
- * Asks every enabled provider in parallel and emits progressively better lyrics:
- * real word timing beats line timing beats plain text; ties go to provider priority.
+ * Sources in order: Spicy Lyrics, Spotify, Musixmatch, NetEase, LRCLIB. All are asked at once for
+ * speed, but a result is only shown once no source still answering could beat it: word timing
+ * beats line timing beats plain text, and within the same kind the earlier source wins.
  */
 class LyricsRepository(context: Context, private val settings: Settings) {
-    private companion object { const val TAG = "SyllableLyrics" }
+    private companion object {
+        const val TAG = "SyllableLyrics"
+        /** Show the best result so far if a better source is this slow. */
+        const val GRACE_MS = 3_500L
+    }
 
-    private val cacheDir = File(context.cacheDir, "lyrics").apply { mkdirs() }
+    // v2: lines carry background vocals, duet sides and credits.
+    private val cacheDir = File(context.cacheDir, "lyrics-v2").apply { mkdirs() }
     private val memory = object : LinkedHashMap<String, Lyrics>(32, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Lyrics>?) = size > 30
     }
 
     private val spotify = SpotifyLyricsProvider()
+    private val spicy = SpicyLyricsProvider(
+        apiKey = { settings.spicyKey },
+        spotifyIdLookup = { q -> if (settings.useSpotify) spotify.findMatch(q)?.trackId else null },
+    )
     private val musixmatch = MusixmatchProvider(context.getSharedPreferences("mxm", Context.MODE_PRIVATE))
     private val netease = NetEaseProvider()
     private val lrclib = LrclibProvider()
 
+    init {
+        File(context.cacheDir, "lyrics").deleteRecursively()
+    }
+
     /** Priority order (first = preferred). */
     private fun providers(): List<LyricsProvider> = buildList {
+        if (settings.useSpicy && settings.spicyKey != null) add(spicy)
         if (settings.useSpotify) add(spotify)
         if (settings.useMusixmatch) add(musixmatch)
         if (settings.useNetEase) add(netease)
@@ -44,6 +61,9 @@ class LyricsRepository(context: Context, private val settings: Settings) {
         val sync = when (l.sync) { SyncType.WORD -> 3; SyncType.LINE -> 2; SyncType.NONE -> 1 }
         return sync * 100 - priority
     }
+
+    /** The best a source that hasn't answered yet could still give. */
+    private fun ceiling(priority: Int) = 300 - priority
 
     sealed interface Progress {
         data class Found(val lyrics: Lyrics, val final: Boolean) : Progress
@@ -66,7 +86,7 @@ class LyricsRepository(context: Context, private val settings: Settings) {
 
         val list = providers()
         val results = Channel<Pair<Int, Lyrics?>>(Channel.UNLIMITED)
-        list.forEachIndexed { i, p ->
+        val jobs = list.mapIndexed { i, p ->
             launch(Dispatchers.IO) {
                 val l = withTimeoutOrNull(30_000) {
                     runCatching { p.fetch(query) }
@@ -77,24 +97,33 @@ class LyricsRepository(context: Context, private val settings: Settings) {
                 results.send(i to l?.takeIf { !it.isEmpty })
             }
         }
+        val pending = list.indices.toMutableSet()
         var best: Lyrics? = null
         var bestRank = Int.MIN_VALUE
-        repeat(list.size) { n ->
-            val (i, l) = results.receive()
-            val done = n == list.size - 1
-            if (l != null) {
-                val r = rank(l, i)
-                if (r > bestRank) {
-                    best = l; bestRank = r
-                    // Real word timing from the top-priority provider can't be beaten.
-                    send(Progress.Found(l, final = done))
-                } else if (done) {
-                    send(Progress.Found(best!!, final = true))
-                }
-            } else if (done) {
-                best?.let { send(Progress.Found(it, final = true)) }
+        var shown: Lyrics? = null
+        val deadline = SystemClock.elapsedRealtime() + GRACE_MS
+        while (pending.isNotEmpty()) {
+            val current = best
+            val waiting = current != null && current !== shown
+            val left = deadline - SystemClock.elapsedRealtime()
+            val msg = when {
+                !waiting -> results.receive()
+                left > 0 -> withTimeoutOrNull(left) { results.receive() }
+                else -> null
             }
+            if (msg == null) {
+                // A better source is slow: show what we have and keep listening.
+                shown = current
+                send(Progress.Found(current!!, final = false))
+                continue
+            }
+            val (i, l) = msg
+            pending -= i
+            if (l != null && rank(l, i) > bestRank) { best = l; bestRank = rank(l, i) }
+            if (best != null && pending.all { ceiling(it) < bestRank }) break
         }
+        jobs.forEach { it.cancel() }
+        best?.let { send(Progress.Found(it, final = true)) }
         val b = best
         if (b == null) {
             send(Progress.NotFound)
@@ -102,7 +131,7 @@ class LyricsRepository(context: Context, private val settings: Settings) {
             synchronized(memory) { memory[key] = b }
             if (b.sync != SyncType.NONE) withContext(Dispatchers.IO) { writeDisk(key, b) }
         }
-    }
+    }.flowOn(Dispatchers.Default) // keep source picking off the busy main thread
 
     fun clearCache() {
         synchronized(memory) { memory.clear() }
@@ -127,28 +156,46 @@ class LyricsRepository(context: Context, private val settings: Settings) {
                     val ws = l.getJSONArray("w")
                     LyricLine(
                         l.getLong("s"), l.getLong("e"),
-                        (0 until ws.length()).map { j ->
-                            val w = ws.getJSONArray(j)
-                            LyricWord(w.getString(0), w.getLong(1), w.getLong(2))
-                        },
+                        words(ws),
+                        l.optJSONArray("b")?.let(::words).orEmpty(),
+                        l.optBoolean("o", false),
                     )
                 },
                 SyncType.valueOf(o.getString("sync")),
                 o.getString("source"),
+                o.optJSONArray("credits")?.let { c ->
+                    (0 until c.length()).map { i ->
+                        val x = c.getJSONObject(i)
+                        Credit(x.getString("label"), x.getString("name"), x.optString("url").ifEmpty { null })
+                    }
+                }.orEmpty(),
             )
         }.getOrNull()
+    }
+
+    private fun words(ws: JSONArray): List<LyricWord> = (0 until ws.length()).map { j ->
+        val w = ws.getJSONArray(j)
+        LyricWord(w.getString(0), w.getLong(1), w.getLong(2))
+    }
+
+    private fun wordsJson(words: List<LyricWord>) = JSONArray().apply {
+        words.forEach { w -> put(JSONArray().put(w.text).put(w.startMs).put(w.endMs)) }
     }
 
     private fun writeDisk(key: String, l: Lyrics) {
         runCatching {
             val lines = JSONArray()
             l.lines.forEach { line ->
-                val ws = JSONArray()
-                line.words.forEach { w -> ws.put(JSONArray().put(w.text).put(w.startMs).put(w.endMs)) }
-                lines.put(JSONObject().put("s", line.startMs).put("e", line.endMs).put("w", ws))
+                val o = JSONObject().put("s", line.startMs).put("e", line.endMs).put("w", wordsJson(line.words))
+                if (line.background.isNotEmpty()) o.put("b", wordsJson(line.background))
+                if (line.oppositeAligned) o.put("o", true)
+                lines.put(o)
             }
+            val credits = JSONArray()
+            l.credits.forEach { c -> credits.put(JSONObject().put("label", c.label).put("name", c.name).put("url", c.url ?: "")) }
             fileFor(key).writeText(
-                JSONObject().put("sync", l.sync.name).put("source", l.source).put("lines", lines).toString(),
+                JSONObject().put("sync", l.sync.name).put("source", l.source).put("lines", lines)
+                    .put("credits", credits).toString(),
             )
         }
     }

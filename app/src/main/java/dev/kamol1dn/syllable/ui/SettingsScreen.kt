@@ -1,5 +1,9 @@
 package dev.kamol1dn.syllable.ui
 
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import dev.kamol1dn.syllable.BuildConfig
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -86,6 +90,45 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit, onSpotifyLogin: () -> 
             Text("Settings", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
         }
 
+        Section("Spicy Lyrics")
+        Card {
+            val builtIn = BuildConfig.SPICY_LYRICS_KEY.isNotEmpty()
+            val hasKey = s.spicyKey.isNotBlank() || builtIn
+            Toggle("Use Spicy Lyrics", s.useSpicy) { v -> vm.settings.update { it.copy(useSpicy = v) } }
+            Text(
+                "Word-by-word lyrics made by the Spicy Lyrics community, with background vocals and duets. " +
+                    "Syllable checks here first.",
+                color = Color.White.copy(alpha = 0.6f), fontSize = 13.sp,
+            )
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(
+                value = s.spicyKey,
+                onValueChange = { v -> vm.settings.update { it.copy(spicyKey = v.trim()) } },
+                label = { Text(if (builtIn) "Your own key (optional)" else "API key") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = Color.White, unfocusedTextColor = Color.White,
+                    focusedBorderColor = Accent, unfocusedBorderColor = Color.White.copy(alpha = 0.25f),
+                    focusedLabelColor = Accent, unfocusedLabelColor = Color.White.copy(alpha = 0.5f),
+                ),
+            )
+            Text(
+                when {
+                    s.spicyKey.isNotBlank() -> "Using your key."
+                    builtIn -> "Using the key built into Syllable."
+                    else -> "Needs a free key. Get one at developers.spicylyrics.org."
+                },
+                color = if (hasKey) Color.White.copy(alpha = 0.5f) else Accent, fontSize = 12.sp,
+                modifier = Modifier.padding(top = 6.dp).clickable {
+                    context.startActivity(
+                        Intent(Intent.ACTION_VIEW, Uri.parse("https://developers.spicylyrics.org")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                },
+            )
+        }
+
         Section("Spotify")
         Card {
             Row(verticalAlignment = Alignment.Top) {
@@ -126,7 +169,8 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit, onSpotifyLogin: () -> 
             Toggle("Musixmatch (word-synced)", s.useMusixmatch) { v -> vm.settings.update { it.copy(useMusixmatch = v) } }
             Toggle("NetEase (word-synced)", s.useNetEase) { v -> vm.settings.update { it.copy(useNetEase = v) } }
             Text(
-                "LRCLIB is always on. If a song only has line timing, Syllable guesses the timing of each word.",
+                "Syllable tries Spicy Lyrics, Spotify, Musixmatch, NetEase and then LRCLIB, and uses the first one " +
+                    "with word timing. LRCLIB is always on. If a song only has line timing, Syllable guesses the timing of each word.",
                 color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp),
             )
             Spacer(Modifier.height(8.dp))
@@ -174,7 +218,7 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit, onSpotifyLogin: () -> 
         Card {
             Text("Syllable ${BuildConfigInfo.versionName(context)}", color = Color.White, fontWeight = FontWeight.SemiBold)
             Text(
-                "Shows the lyrics of what you're playing, word by word. Songs are identified with Shazam. Lyrics come from Spotify, Musixmatch, NetEase and LRCLIB.",
+                "Shows the lyrics of what you're playing, word by word. Songs are identified with Shazam. Lyrics come from Spicy Lyrics, Spotify, Musixmatch, NetEase and LRCLIB.",
                 color = Color.White.copy(alpha = 0.6f), fontSize = 13.sp,
             )
             Text(

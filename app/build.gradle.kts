@@ -11,6 +11,12 @@ val keystoreProps = Properties().apply {
     if (f.exists()) f.inputStream().use { load(it) }
 }
 
+// Spicy Lyrics API key (git-ignored). A publishable key with "no origin header" allowed.
+val spicyProps = Properties().apply {
+    val f = rootProject.file("spicy.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+
 android {
     namespace = "dev.kamol1dn.syllable"
     compileSdk = 37
@@ -21,6 +27,7 @@ android {
         targetSdk = 36
         versionCode = 2
         versionName = "1.1.0"
+        buildConfigField("String", "SPICY_LYRICS_KEY", "\"${spicyProps.getProperty("key", "")}\"")
     }
 
     signingConfigs {
@@ -50,6 +57,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

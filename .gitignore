@@ -8,6 +8,7 @@ captures/
 .kotlin/
 # Release signing (never commit)
 keystore.properties
+spicy.properties
 *.jks
 *.keystore
 /*.apk

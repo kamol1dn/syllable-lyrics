@@ -16,6 +16,7 @@ import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -54,7 +55,13 @@ import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -81,10 +88,15 @@ private sealed interface Row {
     val endMs: Long
     data class Line(val line: LyricLine, override val startMs: Long, override val endMs: Long) : Row
     data class Gap(override val startMs: Long, override val endMs: Long) : Row
+    /** Where the lyrics came from, as the last thing in the list. Never becomes active. */
+    data class Credits(val lyrics: Lyrics) : Row {
+        override val startMs = Long.MAX_VALUE
+        override val endMs = Long.MAX_VALUE
+    }
 }
 
 private fun buildRows(lyrics: Lyrics): List<Row> {
-    if (lyrics.sync == SyncType.NONE) return lyrics.lines.map { Row.Line(it, -1, -1) }
+    if (lyrics.sync == SyncType.NONE) return lyrics.lines.map<LyricLine, Row> { Row.Line(it, -1, -1) } + Row.Credits(lyrics)
     val rows = mutableListOf<Row>()
     val first = lyrics.lines.firstOrNull() ?: return rows
     if (first.startMs > 4_000) rows += Row.Gap(0, first.startMs)
@@ -93,6 +105,7 @@ private fun buildRows(lyrics: Lyrics): List<Row> {
         rows += Row.Line(l, l.startMs, l.endMs)
         if (next != null && next.startMs - l.endMs > 5_000) rows += Row.Gap(l.endMs + 400, next.startMs)
     }
+    rows += Row.Credits(lyrics)
     return rows
 }
 
@@ -164,6 +177,19 @@ fun LyricsView(
         }
     }
 
+    val stillSung by remember(rows) {
+        derivedStateOf {
+            val a = active
+            if (a <= 0) emptySet() else {
+                val p = pos.longValue
+                ((a - 1) downTo maxOf(0, a - 4)).filter { i ->
+                    val r = rows[i]
+                    r is Row.Line && r.startMs <= p && p < r.endMs
+                }.toSet()
+            }
+        }
+    }
+
     val listState = rememberLazyListState()
     val dragged by listState.interactionSource.collectIsDraggedAsState()
     var lastUserScroll by remember { mutableLongStateOf(0L) }
@@ -231,7 +257,7 @@ fun LyricsView(
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             itemsIndexed(rows, key = { i, _ -> i }) { i, row ->
-                val isActive = i == active
+                val isActive = i == active || i in stillSung
                 val distance = if (active < 0) 0 else abs(i - active)
                 Box(
                     Modifier.graphicsLayer {
@@ -240,11 +266,12 @@ fun LyricsView(
                 ) {
                     when (row) {
                         is Row.Gap -> GapDots(row, pos, isActive, horizontalPadding)
+                        is Row.Credits -> CreditsView(row.lyrics, horizontalPadding)
                         is Row.Line -> LineView(
                             line = row.line,
                             synced = synced,
                             isActive = isActive,
-                            isPast = active >= 0 && i < active,
+                            isPast = active >= 0 && i < active && !isActive,
                             distance = distance,
                             pos = pos,
                             textScale = textScale,
@@ -292,12 +319,21 @@ private fun LineView(
     val blurDp = animateFloatAsState(blurTarget, tween(500), label = "blur")
     val density = LocalDensity.current
 
+    val end = line.oppositeAligned
+    val align = if (end) TextAlign.End else TextAlign.Start
     val style = TextStyle(
         fontSize = (30 * textScale).sp,
         lineHeight = (38 * textScale).sp,
         fontWeight = FontWeight.ExtraBold,
         letterSpacing = (-0.3).sp,
         color = Color.White,
+        textAlign = align,
+    )
+    val bgStyle = style.copy(
+        fontSize = (19 * textScale).sp,
+        lineHeight = (25 * textScale).sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 0.sp,
     )
     Box(
         Modifier
@@ -307,20 +343,57 @@ private fun LineView(
             .padding(horizontal = horizontalPadding, vertical = 9.dp)
             .graphicsLayer {
                 scaleX = scale.value; scaleY = scale.value
-                transformOrigin = TransformOrigin(0f, 0.5f)
+                transformOrigin = TransformOrigin(if (end) 1f else 0f, 0.5f)
                 this.alpha = if (isActive) 1f else alpha.value
                 val r = with(density) { blurDp.value.dp.toPx() }
                 renderEffect = if (r > 0.5f && Build.VERSION.SDK_INT >= 31) BlurEffect(r, r, TileMode.Decal) else null
             },
     ) {
-        if (!isActive || !synced) {
-            Text(line.text, style = style)
-        } else {
-            FlowRow {
-                line.words.forEach { w -> WordView(w, pos, style) }
+        Column(
+            Modifier.fillMaxWidth(),
+            horizontalAlignment = if (end) Alignment.End else Alignment.Start,
+        ) {
+            val arrangement = if (end) Arrangement.End else Arrangement.Start
+            if (!isActive || !synced) {
+                Text(line.text, style = style)
+            } else {
+                FlowRow(horizontalArrangement = arrangement) {
+                    line.words.forEach { w -> WordView(w, pos, style) }
+                }
+            }
+            if (line.background.isNotEmpty()) {
+                Spacer(Modifier.height(2.dp))
+                if (!isActive || !synced) {
+                    Text(line.backgroundText, style = bgStyle, modifier = Modifier.graphicsLayer { this.alpha = 0.8f })
+                } else {
+                    FlowRow(horizontalArrangement = arrangement) {
+                        line.background.forEach { w -> WordView(w, pos, bgStyle) }
+                    }
+                }
             }
         }
     }
+}
+
+/** "Lyrics from …" plus the people who made the sync, linked to their pages. */
+@Composable
+private fun CreditsView(lyrics: Lyrics, horizontalPadding: Dp) {
+    val link = TextLinkStyles(SpanStyle(color = Color.White.copy(alpha = 0.85f), fontWeight = FontWeight.SemiBold))
+    val text = buildAnnotatedString {
+        append("Lyrics from ")
+        append(lyrics.source)
+        lyrics.credits.forEachIndexed { i, c ->
+            append(if (i == 0) " · " else ", ")
+            append(c.label)
+            append(" ")
+            if (c.url != null) withLink(LinkAnnotation.Url(c.url, link)) { append(c.name) } else append(c.name)
+        }
+    }
+    Text(
+        text,
+        style = TextStyle(fontSize = 13.sp, lineHeight = 18.sp, color = Color.White.copy(alpha = 0.5f)),
+        modifier = Modifier.padding(horizontal = horizontalPadding, vertical = 28.dp),
+    )
 }
 
 /**

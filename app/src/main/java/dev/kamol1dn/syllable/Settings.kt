@@ -6,6 +6,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 data class SettingsState(
+    val useSpicy: Boolean = true,
+    /** Your own Spicy Lyrics key. Empty means the key built into the app, if any. */
+    val spicyKey: String = "",
     val useSpotify: Boolean = true,
     val useMusixmatch: Boolean = true,
     val useNetEase: Boolean = true,
@@ -21,11 +24,16 @@ class Settings(context: Context) {
     private val _state = MutableStateFlow(read())
     val state: StateFlow<SettingsState> = _state.asStateFlow()
 
+    val useSpicy get() = _state.value.useSpicy
+    val spicyKey: String?
+        get() = _state.value.spicyKey.trim().ifEmpty { BuildConfig.SPICY_LYRICS_KEY }.ifEmpty { null }
     val useSpotify get() = _state.value.useSpotify
     val useMusixmatch get() = _state.value.useMusixmatch
     val useNetEase get() = _state.value.useNetEase
 
     private fun read() = SettingsState(
+        useSpicy = prefs.getBoolean("spicy", true),
+        spicyKey = prefs.getString("spicy_key", "").orEmpty(),
         useSpotify = prefs.getBoolean("spotify", true),
         useMusixmatch = prefs.getBoolean("musixmatch", true),
         useNetEase = prefs.getBoolean("netease", true),
@@ -39,6 +47,8 @@ class Settings(context: Context) {
         val s = block(_state.value)
         _state.value = s
         prefs.edit()
+            .putBoolean("spicy", s.useSpicy)
+            .putString("spicy_key", s.spicyKey)
             .putBoolean("spotify", s.useSpotify)
             .putBoolean("musixmatch", s.useMusixmatch)
             .putBoolean("netease", s.useNetEase)
