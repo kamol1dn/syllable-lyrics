@@ -43,7 +43,7 @@ Spicy Lyrics needs a free key from [developers.spicylyrics.org](https://develope
 key=sl_pk_...
 ```
 
-A key that ships inside an app should be a publishable key with "No origin header" turned on, which Spicy Lyrics allows for native apps. The end of the lyrics shows where they came from, and for community syncs, who uploaded and made them. The Spicy Lyrics terms ask for this.
+A key that ships inside an app should be a client key (`sl_pk_`). Make one under **Client access** on your application page, with "Allow requests with no Origin header" turned on, since Android apps don't send that header. The end of the lyrics shows where they came from, and for community syncs, who uploaded and made them. The Spicy Lyrics terms ask for this. They also limit how long lyrics can be kept, so Syllable clears cached lyrics after 30 days.
 
 ## Song recognition
 

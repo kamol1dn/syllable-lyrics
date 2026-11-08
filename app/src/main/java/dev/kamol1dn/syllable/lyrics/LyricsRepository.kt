@@ -27,6 +27,8 @@ class LyricsRepository(context: Context, private val settings: Settings) {
         const val TAG = "SyllableLyrics"
         /** Show the best result so far if a better source is this slow. */
         const val GRACE_MS = 3_500L
+        /** Spicy Lyrics' terms allow keeping a response for at most 30 days. */
+        const val CACHE_MAX_AGE_MS = 30L * 24 * 60 * 60 * 1000
     }
 
     // v2: lines carry background vocals, duet sides and credits.
@@ -46,7 +48,10 @@ class LyricsRepository(context: Context, private val settings: Settings) {
 
     init {
         File(context.cacheDir, "lyrics").deleteRecursively()
+        cacheDir.listFiles()?.forEach { if (isExpired(it)) it.delete() }
     }
+
+    private fun isExpired(f: File) = System.currentTimeMillis() - f.lastModified() > CACHE_MAX_AGE_MS
 
     /** Priority order (first = preferred). */
     private fun providers(): List<LyricsProvider> = buildList {
@@ -148,6 +153,7 @@ class LyricsRepository(context: Context, private val settings: Settings) {
         runCatching {
             val f = fileFor(key)
             if (!f.exists()) return@runCatching null
+            if (isExpired(f)) { f.delete(); return@runCatching null }
             val o = JSONObject(f.readText())
             val lines = o.getJSONArray("lines")
             Lyrics(
