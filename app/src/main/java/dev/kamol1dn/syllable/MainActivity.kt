@@ -1,6 +1,7 @@
 package dev.kamol1dn.syllable
 
 import android.content.Intent
+import android.content.res.Configuration
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -19,7 +20,12 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.IntOffset
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -75,6 +81,14 @@ class MainActivity : ComponentActivity() {
                 // Counts visits to the listen screen, so each visit starts a fresh listen.
                 var listenEntry by rememberSaveable { mutableIntStateOf(0) }
                 val mode by vm.mode.collectAsStateWithLifecycle()
+                // Sideways is for watching the lyrics, so the status and navigation bars get out of
+                // the way. A swipe from the edge brings them back for a moment.
+                val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+                LaunchedEffect(landscape) {
+                    val bars = WindowCompat.getInsetsController(window, window.decorView)
+                    bars.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    if (landscape) bars.hide(WindowInsetsCompat.Type.systemBars()) else bars.show(WindowInsetsCompat.Type.systemBars())
+                }
                 BackHandler(enabled = screen != Screen.MAIN) {
                     screen = Screen.MAIN
                 }
@@ -116,6 +130,11 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         vm.onResume()
+    }
+
+    override fun onPause() {
+        vm.onPause()
+        super.onPause()
     }
 
     init {

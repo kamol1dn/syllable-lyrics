@@ -179,8 +179,7 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit, onSpotifyLogin: () -> 
                         },
                     )
                     Text(
-                        "Lyrics will look like this", color = Color.White, fontWeight = FontWeight.ExtraBold,
-                        fontSize = (30 * s.textScale).sp, lineHeight = (38 * s.textScale).sp, letterSpacing = (-0.3).sp,
+                        "Lyrics will look like this", style = lyricsTextStyle(s.textScale),
                         modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
                     )
                     val canBlur = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
@@ -189,6 +188,14 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit, onSpotifyLogin: () -> 
                         subtitle = if (canBlur) null else "Needs Android 12 or newer", enabled = canBlur,
                     ) { v -> vm.settings.update { it.copy(blurInactive = v) } }
                     Toggle("Keep screen on while lyrics play", s.keepScreenOn) { v -> vm.settings.update { it.copy(keepScreenOn = v) } }
+                }
+
+                Section("Songs found with the mic")
+                Card {
+                    Toggle(
+                        "Keep listening", s.autoListen,
+                        subtitle = "Checks the mic about once a minute to stay in time and to catch the next song",
+                    ) { v -> vm.settings.update { it.copy(autoListen = v) } }
                 }
 
                 Section("Timing")
@@ -278,7 +285,7 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit, onSpotifyLogin: () -> 
                     Toggle("LRCLIB", checked = true, subtitle = "Always on", enabled = false) {}
                     Helper(
                         "Syllable asks every source at once. Word timing beats line timing, and if two tie, the one higher on " +
-                            "this page wins. When a song only has line timing, Syllable guesses when each word starts.",
+                            "this page wins. A song with only line timing lights up line by line.",
                         Modifier.padding(top = 6.dp),
                     )
                 }

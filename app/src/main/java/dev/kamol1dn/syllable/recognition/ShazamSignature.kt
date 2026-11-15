@@ -82,7 +82,7 @@ class ShazamSignature(
         for (p in 0 until 1025) {
             if (p < 1022) spreadLast[p] = max(spreadLast[p], max(spreadLast[p + 1], spreadLast[p + 2]))
             var maxValue = spreadLast[p]
-            for (former in intArrayOf(-1, -3, -6)) {
+            for (former in SPREAD_OFFSETS) {
                 val f = spread[((spreadPos + former) % 256 + 256) % 256]
                 maxValue = max(f[p], maxValue)
                 f[p] = maxValue
@@ -179,6 +179,7 @@ class ShazamSignature(
     fun uri(): String = "data:audio/vnd.shazam.sig;base64," + Base64.getEncoder().encodeToString(encode())
 
     companion object {
+        private val SPREAD_OFFSETS = intArrayOf(-1, -3, -6)
         const val SAMPLE_RATE = 16000
 
         /** numpy.hanning(2050)[1:-1] */

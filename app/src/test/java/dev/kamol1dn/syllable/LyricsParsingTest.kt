@@ -9,22 +9,20 @@ import dev.kamol1dn.syllable.lyrics.TextMatch
 import dev.kamol1dn.syllable.spotify.SpotifyLyricsProvider
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.lang.reflect.Proxy
 
 class LyricsParsingTest {
 
     @Test
-    fun lineLrcGetsEstimatedWords() {
+    fun lineLrcStaysLineTimed() {
         val l = LrcParser.parse("[ti:x]\n[00:01.00]Hello there world\n[00:04.50]Second line\n", "t")!!
         assertEquals(SyncType.LINE, l.sync)
         assertEquals(2, l.lines.size)
-        val w = l.lines[0].words
-        assertEquals(listOf("Hello ", "there ", "world"), w.map { it.text })
-        assertEquals(1000L, w.first().startMs)
-        assertTrue(w.zipWithNext().all { (a, b) -> a.endMs <= b.startMs + 1 })
-        assertTrue(w.last().endMs <= 4500)
+        // No word timing is made up: the line is one piece, lit until the next line starts.
+        assertEquals(listOf("Hello there world"), l.lines[0].words.map { it.text })
+        assertEquals(1000L, l.lines[0].startMs)
+        assertEquals(4500L, l.lines[0].endMs)
     }
 
     @Test

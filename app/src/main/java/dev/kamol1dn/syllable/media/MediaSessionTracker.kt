@@ -12,6 +12,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.service.notification.NotificationListenerService
 import androidx.core.app.NotificationManagerCompat
+import dev.kamol1dn.syllable.SyllableApp
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -19,7 +20,7 @@ import kotlinx.coroutines.flow.asStateFlow
 /** Exists only so the user can grant notification access, which unlocks the active media sessions. */
 class MediaNotificationListener : NotificationListenerService() {
     override fun onListenerConnected() {
-        MediaSessionTracker.instance?.refresh()
+        (application as? SyllableApp)?.media?.refresh()
     }
 }
 
@@ -40,8 +41,11 @@ data class NowPlaying(
     /** Playing on another device through Cast or Spotify Connect, not from this phone. */
     val isRemote: Boolean = false,
 ) {
-    fun livePosition(now: Long = SystemClock.elapsedRealtime()): Long =
-        if (isPlaying) positionMs + ((now - updateRealtime) * speed).toLong() else positionMs
+    fun livePosition(now: Long = SystemClock.elapsedRealtime()): Long {
+        val p = if (isPlaying) positionMs + ((now - updateRealtime) * speed).toLong() else positionMs
+        // A player that stops reporting at the end of a track would otherwise run past it.
+        return if (durationMs > 0) p.coerceIn(0, durationMs) else p.coerceAtLeast(0)
+    }
 
     val trackKey: String get() = "$packageName|$artist|$title"
 }
@@ -62,6 +66,11 @@ class MediaSessionTracker(private val context: Context) {
     private var active: MediaController? = null
     private var listening = false
 
+    /** The playback-state timestamp last seen for the current track, and when that track appeared. */
+    private var trackKey: String? = null
+    private var trackSince = 0L
+    private var stateTimeBeforeTrack = 0L
+
     private val sessionsListener = MediaSessionManager.OnActiveSessionsChangedListener { list ->
         attach(list.orEmpty())
     }
@@ -74,10 +83,6 @@ class MediaSessionTracker(private val context: Context) {
             publish()
         }
         override fun onSessionDestroyed() = refresh()
-    }
-
-    init {
-        instance = this
     }
 
     fun checkAccess(): Boolean {
@@ -140,8 +145,24 @@ class MediaSessionTracker(private val context: Context) {
             ?: md.getBitmap(MediaMetadata.METADATA_KEY_ART)
             ?: md.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
         val mediaId = md.getString(MediaMetadata.METADATA_KEY_MEDIA_ID).orEmpty()
-        val spotifyId = Regex("""spotify:track:([A-Za-z0-9]{22})""").find(mediaId)?.groupValues?.get(1)
+        val spotifyId = SPOTIFY_URI.find(mediaId)?.groupValues?.get(1)
         val prev = _nowPlaying.value
+        val now = SystemClock.elapsedRealtime()
+        val stateTime = st?.lastPositionUpdateTime ?: 0L
+
+        // Players often announce the next track before they reset the position, so for a moment
+        // the new title comes with the old track's position and the lyrics would jump to the end.
+        // Until a fresh playback state arrives, a position reported well before the track
+        // appeared counts from zero instead.
+        val key = "${c.packageName}|$artist|$title"
+        if (key != trackKey) {
+            stateTimeBeforeTrack = if (trackKey != null && prev?.packageName == c.packageName) stateTime else 0L
+            trackKey = key
+            trackSince = now
+        }
+        val stale = stateTimeBeforeTrack != 0L && stateTime == stateTimeBeforeTrack &&
+            stateTime < trackSince - STALE_STATE_MS && now - trackSince < STALE_WINDOW_MS
+        if (!stale) stateTimeBeforeTrack = 0L
         _nowPlaying.value = NowPlaying(
             packageName = c.packageName,
             title = title,
@@ -152,11 +173,11 @@ class MediaSessionTracker(private val context: Context) {
             artwork = if (prev != null && prev.title == title && prev.artwork?.sameAs(art) == true) prev.artwork else art,
             spotifyTrackId = spotifyId,
             isPlaying = st?.state == PlaybackState.STATE_PLAYING,
-            positionMs = st?.position ?: 0L,
-            updateRealtime = st?.lastPositionUpdateTime?.takeIf { it > 0 } ?: SystemClock.elapsedRealtime(),
+            positionMs = if (stale) 0L else st?.position ?: 0L,
+            updateRealtime = if (stale) trackSince else stateTime.takeIf { it > 0 } ?: now,
             speed = st?.playbackSpeed?.takeIf { it > 0f } ?: 1f,
             canSeek = st != null && (st.actions and PlaybackState.ACTION_SEEK_TO) != 0L,
-            isRemote = c.playbackInfo?.playbackType == MediaController.PlaybackInfo.PLAYBACK_TYPE_REMOTE,
+            isRemote = c.playbackInfo.playbackType == MediaController.PlaybackInfo.PLAYBACK_TYPE_REMOTE,
         )
     }
 
@@ -184,7 +205,11 @@ class MediaSessionTracker(private val context: Context) {
         return true
     }
 
-    companion object {
-        @Volatile var instance: MediaSessionTracker? = null
+    private companion object {
+        val SPOTIFY_URI = Regex("""spotify:track:([A-Za-z0-9]{22})""")
+        /** A playback state this much older than the track it arrived with belongs to the track before. */
+        const val STALE_STATE_MS = 1_000L
+        /** Stop second-guessing the player if it never sends a new state. */
+        const val STALE_WINDOW_MS = 4_000L
     }
 }

@@ -25,8 +25,8 @@ android {
         applicationId = "dev.kamol1dn.syllable"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
         buildConfigField("String", "SPICY_LYRICS_KEY", "\"${spicyProps.getProperty("key", "")}\"")
     }
 

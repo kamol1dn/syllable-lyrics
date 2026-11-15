@@ -44,7 +44,7 @@ data class Credit(val label: String, val name: String, val url: String? = null)
 enum class SyncType {
     /** Real per-word (or per-syllable) timestamps from the provider. */
     WORD,
-    /** Line timestamps from the provider; word timings are estimated inside each line. */
+    /** Line timestamps only. Each line is a single [LyricWord] spanning the line, lit as a whole. */
     LINE,
     /** No timing at all. */
     NONE,

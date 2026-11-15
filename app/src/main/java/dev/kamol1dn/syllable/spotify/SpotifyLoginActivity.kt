@@ -12,6 +12,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
+import androidx.activity.addCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -74,6 +75,8 @@ class SpotifyLoginActivity : ComponentActivity() {
             insets
         }
         setContentView(root)
+        // Back goes back inside the sign-in pages first.
+        onBackPressedDispatcher.addCallback(this) { if (web.canGoBack()) web.goBack() else finish() }
 
         if (savedInstanceState == null) {
             web.loadUrl(if (SpotifyAuth.isSignedIn()) SpotifyAuth.PLAYER_URL else SpotifyAuth.LOGIN_URL)
@@ -98,11 +101,6 @@ class SpotifyLoginActivity : ComponentActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         web.saveState(outState)
-    }
-
-    @Deprecated("Back navigates inside the WebView first")
-    override fun onBackPressed() {
-        if (web.canGoBack()) web.goBack() else super.onBackPressed()
     }
 
     override fun onDestroy() {

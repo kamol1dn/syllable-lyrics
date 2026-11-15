@@ -128,7 +128,7 @@ class SpotifyLyricsProvider : LyricsProvider {
                 anyWord = true
                 LyricLine(r.start, maxOf(r.end, words.last().endMs), words)
             } else {
-                LrcParser.estimateLine(r.text, r.start, next)
+                LrcParser.wholeLine(r.text.trim(), r.start, if (r.end > r.start) r.end else next)
             }
         }
         return Lyrics(lines, if (anyWord) SyncType.WORD else SyncType.LINE, name)

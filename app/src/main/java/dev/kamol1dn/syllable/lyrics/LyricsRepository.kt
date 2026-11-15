@@ -31,8 +31,8 @@ class LyricsRepository(context: Context, private val settings: Settings) {
         const val CACHE_MAX_AGE_MS = 30L * 24 * 60 * 60 * 1000
     }
 
-    // v2: lines carry background vocals, duet sides and credits.
-    private val cacheDir = File(context.cacheDir, "lyrics-v2").apply { mkdirs() }
+    // v3: line-timed lyrics no longer carry guessed word timing.
+    private val cacheDir = File(context.cacheDir, "lyrics-v3").apply { mkdirs() }
     private val memory = object : LinkedHashMap<String, Lyrics>(32, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Lyrics>?) = size > 30
     }
@@ -47,7 +47,7 @@ class LyricsRepository(context: Context, private val settings: Settings) {
     private val lrclib = LrclibProvider()
 
     init {
-        File(context.cacheDir, "lyrics").deleteRecursively()
+        listOf("lyrics", "lyrics-v2").forEach { File(context.cacheDir, it).deleteRecursively() }
         cacheDir.listFiles()?.forEach { if (isExpired(it)) it.delete() }
     }
 
@@ -98,7 +98,7 @@ class LyricsRepository(context: Context, private val settings: Settings) {
             launch(Dispatchers.IO) {
                 var error: Throwable? = null
                 val l = withTimeoutOrNull(30_000) {
-                    runCatching { p.fetch(query) }
+                    catching { p.fetch(query) }
                         .onFailure { error = it; android.util.Log.w(TAG, "${p.name} failed: $it") }
                         .getOrNull()
                 }

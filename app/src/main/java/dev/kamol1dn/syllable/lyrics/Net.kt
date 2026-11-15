@@ -57,6 +57,15 @@ object Net {
     }
 }
 
+/** Like [runCatching], but a cancelled coroutine stays cancelled instead of looking like a failed request. */
+inline fun <T> catching(block: () -> T): Result<T> = try {
+    Result.success(block())
+} catch (e: kotlin.coroutines.cancellation.CancellationException) {
+    throw e
+} catch (e: Throwable) {
+    Result.failure(e)
+}
+
 interface LyricsProvider {
     val name: String
     suspend fun fetch(query: TrackQuery): Lyrics?

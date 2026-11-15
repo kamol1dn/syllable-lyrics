@@ -14,7 +14,7 @@ class LrclibProvider : LyricsProvider {
             query.album?.takeIf { it.isNotBlank() }?.let { append("&album_name=").append(Net.enc(it)) }
             query.durationMs?.takeIf { it > 0 }?.let { append("&duration=").append(it / 1000) }
         }
-        runCatching { Net.get(direct) }.getOrNull()?.let { body ->
+        catching { Net.get(direct) }.getOrNull()?.let { body ->
             fromRecord(JSONObject(body))?.let { return it }
         }
 

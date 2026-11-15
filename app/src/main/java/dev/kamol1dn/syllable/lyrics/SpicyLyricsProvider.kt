@@ -33,7 +33,7 @@ class SpicyLyricsProvider(
         }
         // A Spotify lookup can land on another release of the song that Spicy has no sync for,
         // so Spicy's own search still gets a turn before giving up.
-        runCatching { spotifyIdLookup(query) }.getOrNull()?.takeIf { tried.add(it) }?.let { id ->
+        catching { spotifyIdLookup(query) }.getOrNull()?.takeIf { tried.add(it) }?.let { id ->
             lyricsFor(key, id)?.let { return it }
         }
         for (id in search(key, query)) {
@@ -155,7 +155,7 @@ class SpicyLyricsProvider(
         val lines = raws.mapIndexed { i, r ->
             val next = raws.getOrNull(i + 1)?.start ?: (r.start + 6_000)
             val end = if (r.end > r.start) r.end else next
-            LrcParser.estimateLine(r.text, r.start, end).copy(oppositeAligned = r.opposite)
+            LrcParser.wholeLine(r.text, r.start, end).copy(oppositeAligned = r.opposite)
         }
         return Lyrics(lines, SyncType.LINE, label)
     }

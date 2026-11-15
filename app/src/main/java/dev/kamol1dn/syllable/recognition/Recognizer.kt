@@ -3,6 +3,7 @@ package dev.kamol1dn.syllable.recognition
 import android.annotation.SuppressLint
 import android.media.AudioFormat
 import android.media.AudioRecord
+import android.media.AudioTimestamp
 import android.media.MediaRecorder
 import android.os.SystemClock
 import android.util.Log
@@ -76,10 +77,18 @@ object Recognizer {
             rec.startRecording()
             val start = SystemClock.elapsedRealtime()
             var attempt = 0
+            var emptyReads = 0
             while (attempt < attemptsAtMs.size) {
                 currentCoroutineContext().ensureActive()
                 val read = rec.read(chunk, 0, chunk.size)
-                if (read <= 0) continue
+                if (read <= 0) {
+                    // An error code (mic taken by a call, say) never recovers, so don't spin on it.
+                    if (read < 0 || ++emptyReads > 50) {
+                        emit(RecognitionEvent.Failed(RecognitionEvent.Failed.Reason.MIC)); return@flow
+                    }
+                    continue
+                }
+                emptyReads = 0
                 val copy = minOf(read, total.size - n)
                 System.arraycopy(chunk, 0, total, n, copy)
                 n += copy
@@ -109,7 +118,7 @@ object Recognizer {
                     val match = result.getOrNull()
                     if (match != null) {
                         // The match offset is the song position at the first recorded sample.
-                        emit(RecognitionEvent.Found(match.copy(anchorRealtime = start)))
+                        emit(RecognitionEvent.Found(match.copy(anchorRealtime = firstSampleRealtime(rec) ?: start)))
                         return@flow
                     }
                     if (attempt < attemptsAtMs.size) emit(RecognitionEvent.Listening(0f, sampleMs))
@@ -121,6 +130,19 @@ object Recognizer {
             rec.release()
         }
     }.flowOn(Dispatchers.IO)
+
+    /**
+     * When the first sample was really captured, on the [SystemClock.elapsedRealtime] clock. The
+     * recorder's own timestamp leaves out the start-up and buffering delay that a clock read
+     * around startRecording() would include, which otherwise shows up as lyrics running late.
+     */
+    private fun firstSampleRealtime(rec: AudioRecord): Long? = runCatching {
+        val ts = AudioTimestamp()
+        if (rec.getTimestamp(ts, AudioTimestamp.TIMEBASE_BOOTTIME) != AudioRecord.SUCCESS) return null
+        val at = ts.nanoTime / 1_000_000 - ts.framePosition * 1000 / RATE
+        // Ignore a timestamp that is clearly off (some devices report zeros right after starting).
+        at.takeIf { ts.nanoTime > 0 && abs(SystemClock.elapsedRealtime() - at) < 60_000 }
+    }.getOrNull()
 }
 
 object ShazamApi {

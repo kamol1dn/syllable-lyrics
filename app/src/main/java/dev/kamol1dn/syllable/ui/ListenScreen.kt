@@ -7,18 +7,13 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -40,7 +35,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -48,13 +42,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.GraphicEq
-import androidx.compose.material.icons.rounded.Lyrics
 import androidx.activity.compose.LocalActivity
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -69,7 +60,6 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
-import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
 import androidx.core.app.ActivityCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
@@ -84,15 +74,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import coil3.compose.AsyncImage
 import dev.kamol1dn.syllable.MainViewModel
 import dev.kamol1dn.syllable.recognition.RecognitionEvent
 
@@ -139,15 +125,18 @@ fun ListenScreen(vm: MainViewModel, onBack: () -> Unit, onShowLyrics: () -> Unit
             when {
                 e is RecognitionEvent.Found && prev !is RecognitionEvent.Found -> haptic.performHapticFeedback(HapticFeedbackType.Confirm)
                 e == RecognitionEvent.NoMatch || e is RecognitionEvent.Failed -> haptic.performHapticFeedback(HapticFeedbackType.Reject)
+                else -> Unit
             }
             prev = e
         }
     }
 
-    // Once a song is found, its cover becomes the background.
-    val found = (event as? RecognitionEvent.Found)?.track
-    val cover = rememberCoverBitmap(found?.coverUrl, found?.let { "${it.artist}|${it.title}" })
-    ArtBackground(if (event is RecognitionEvent.Found) cover else null) {
+    // A match goes straight to its lyrics; the view model has already put the song on screen.
+    LaunchedEffect(Unit) {
+        snapshotFlow { event }.collect { if (it is RecognitionEvent.Found) onShowLyrics() }
+    }
+
+    ArtBackground(null) {
         BoxWithConstraints(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
             val wide = isWideLayout(maxWidth, maxHeight)
             val maxH = maxHeight
@@ -155,26 +144,12 @@ fun ListenScreen(vm: MainViewModel, onBack: () -> Unit, onShowLyrics: () -> Unit
                 Row(Modifier.padding(8.dp)) {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", tint = Color.White) }
                 }
-                AnimatedContent(
-                    targetState = event,
-                    contentKey = { it is RecognitionEvent.Found },
-                    transitionSpec = {
-                        (fadeIn(tween(400)) + scaleIn(spring(dampingRatio = 0.7f, stiffness = Spring.StiffnessLow), initialScale = 0.9f)) togetherWith
-                            (fadeOut(tween(200)) + scaleOut(tween(250), targetScale = 1.05f))
-                    },
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
-                    label = "listen",
-                ) { e ->
-                    when (e) {
-                        is RecognitionEvent.Found -> ResultCard(
-                            e, wide, maxH,
-                            onLyrics = { vm.showRecognizedLyrics(e.track); onShowLyrics() },
-                            onAgain = ::start,
-                        )
-                        else -> ListeningButton(e, wide, maxH, micDenied, canAskAgain, onTap = {
-                            if (e is RecognitionEvent.Listening || e is RecognitionEvent.Matching) vm.stopListening() else start()
-                        })
-                    }
+                Box(Modifier.weight(1f).fillMaxWidth()) {
+                    // The found song keeps the "matching" look for the moment the screen takes to change.
+                    val e = event.let { if (it is RecognitionEvent.Found) RecognitionEvent.Matching else it }
+                    ListeningButton(e, wide, maxH, micDenied, canAskAgain, onTap = {
+                        if (e is RecognitionEvent.Listening || e is RecognitionEvent.Matching) vm.stopListening() else start()
+                    })
                 }
             }
         }
@@ -301,63 +276,6 @@ private fun ListeningButton(e: RecognitionEvent?, wide: Boolean, maxH: Dp, micDe
             Texts(Alignment.CenterHorizontally, TextAlign.Center)
             Spacer(Modifier.height(56.dp))
             RecordButton()
-        }
-    }
-}
-
-@Composable
-private fun ResultCard(e: RecognitionEvent.Found, wide: Boolean, maxH: Dp, onLyrics: () -> Unit, onAgain: () -> Unit) {
-    val t = e.track
-    // The cover pops in with the card, the text follows a moment later.
-    var shown by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { shown = true }
-    val artScale by animateFloatAsState(if (shown) 1f else 0.82f, spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessLow), label = "art")
-    val textAlpha by animateFloatAsState(if (shown) 1f else 0f, tween(500, delayMillis = 150), label = "text")
-    val artSize = if (wide) (maxH - 88.dp).coerceIn(140.dp, 260.dp) else 260.dp
-
-    @Composable
-    fun Art() {
-        AsyncImage(
-            model = t.coverUrl,
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.size(artSize).graphicsLayer { scaleX = artScale; scaleY = artScale }
-                .clip(MaterialTheme.shapes.medium).background(Color.White.copy(alpha = 0.08f)),
-        )
-    }
-
-    @Composable
-    fun Info(align: Alignment.Horizontal, textAlign: TextAlign) {
-        Column(Modifier.graphicsLayer { alpha = textAlpha; translationY = (1 - textAlpha) * 24f }, horizontalAlignment = align) {
-            Text(t.title, color = Color.White, style = MaterialTheme.typography.headlineMedium, textAlign = textAlign)
-            Text(t.artist, color = Color.White.copy(alpha = 0.75f), fontSize = 18.sp, textAlign = textAlign)
-            t.album?.let { Text(it, color = Color.White.copy(alpha = 0.5f), fontSize = 14.sp, textAlign = textAlign) }
-            Spacer(Modifier.height(if (wide) 20.dp else 32.dp))
-            PrimaryButton("Show lyrics", onLyrics, Modifier.fillMaxWidth(), icon = Icons.Rounded.Lyrics)
-            Spacer(Modifier.height(12.dp))
-            SecondaryButton("Listen again", onAgain, Modifier.fillMaxWidth())
-        }
-    }
-
-    if (wide) {
-        Row(
-            Modifier.semantics { paneTitle = "${t.title} by ${t.artist}" }.fillMaxSize().padding(horizontal = 32.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center,
-        ) {
-            Art()
-            Spacer(Modifier.width(32.dp))
-            Box(Modifier.widthIn(max = 380.dp).verticalScroll(rememberScrollState())) { Info(Alignment.Start, TextAlign.Start) }
-        }
-    } else {
-        Column(
-            Modifier.semantics { paneTitle = "${t.title} by ${t.artist}" }.fillMaxSize().verticalScroll(rememberScrollState()).padding(28.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
-        ) {
-            Art()
-            Spacer(Modifier.height(24.dp))
-            Info(Alignment.CenterHorizontally, TextAlign.Center)
         }
     }
 }

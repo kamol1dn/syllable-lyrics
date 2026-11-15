@@ -6,6 +6,7 @@ import dev.kamol1dn.syllable.media.OutputKind
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.updateAndGet
 import org.json.JSONObject
 
 /** Saved timing for one output device. Positive shows lyrics earlier. */
@@ -28,6 +29,8 @@ data class SettingsState(
     val textScale: Float = 1f,
     val blurInactive: Boolean = true,
     val keepScreenOn: Boolean = true,
+    /** While a mic-identified song is on screen, listen again now and then to stay in sync and catch the next song. */
+    val autoListen: Boolean = true,
 ) {
     fun defaultOffset(kind: OutputKind): Long = if (kind == OutputKind.BLUETOOTH) bluetoothDefaultMs else 0L
 
@@ -63,11 +66,11 @@ class Settings(context: Context) {
         textScale = prefs.getFloat("scale", 1f),
         blurInactive = prefs.getBoolean("blur", true),
         keepScreenOn = prefs.getBoolean("screen_on", true),
+        autoListen = prefs.getBoolean("auto_listen", true),
     )
 
     fun update(block: (SettingsState) -> SettingsState) {
-        val s = block(_state.value)
-        _state.value = s
+        val s = _state.updateAndGet(block)
         prefs.edit()
             .putBoolean("spicy", s.useSpicy)
             .putString("spicy_key", s.spicyKey)
@@ -80,6 +83,7 @@ class Settings(context: Context) {
             .putFloat("scale", s.textScale)
             .putBoolean("blur", s.blurInactive)
             .putBoolean("screen_on", s.keepScreenOn)
+            .putBoolean("auto_listen", s.autoListen)
             .apply()
     }
 

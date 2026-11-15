@@ -1,16 +1,21 @@
 package dev.kamol1dn.syllable
 
+import android.Manifest
 import android.app.Application
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.SystemClock
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.kamol1dn.syllable.lyrics.Lyrics
 import dev.kamol1dn.syllable.lyrics.LyricsRepository
 import dev.kamol1dn.syllable.lyrics.SyncType
+import dev.kamol1dn.syllable.lyrics.TextMatch
+import dev.kamol1dn.syllable.lyrics.catching
 import dev.kamol1dn.syllable.lyrics.TrackQuery
 import dev.kamol1dn.syllable.media.AudioOutput
 import dev.kamol1dn.syllable.media.NowPlaying
@@ -24,7 +29,10 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.transformLatest
 import kotlinx.coroutines.flow.update
@@ -40,8 +48,18 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 enum class Mode { NOW_PLAYING, RECOGNIZED }
+
+/** The outcome of pressing the detect button on the lyrics. */
+enum class ListenNote { RESYNCED, NEW_SONG, NO_MATCH }
+
+private const val CHECK_MS = 60_000L
+private const val END_LEAD_MS = 6_000L
+private const val AFTER_END_CHECK_MS = 12_000L
+private const val AFTER_END_WINDOW_MS = 10 * 60_000L
+private const val AUTO_RESYNC_MS = 600L
 
 /** Timing applied to the lyrics. [output] is the device it is saved for, or null for a mic song. */
 data class Timing(val offsetMs: Long, val output: AudioOutput?, val isDefault: Boolean)
@@ -82,6 +100,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _recognition = MutableStateFlow<RecognitionEvent?>(null)
     val recognition: StateFlow<RecognitionEvent?> = _recognition.asStateFlow()
     private var recognitionJob: Job? = null
+
+    /** A quiet listen is running on the lyrics screen: the automatic check, or the detect button. */
+    private val _relistening = MutableStateFlow(false)
+    val relistening: StateFlow<Boolean> = _relistening.asStateFlow()
+    private var relistenJob: Job? = null
+
+    /** What the last press of the detect button on the lyrics did, shown for a moment. */
+    private val _listenNote = MutableStateFlow<ListenNote?>(null)
+    val listenNote: StateFlow<ListenNote?> = _listenNote.asStateFlow()
+
+    /** The mic may only be used while the app is on screen. */
+    private val foreground = MutableStateFlow(false)
 
     /** Timing nudge (ms) for a song found with the mic, reset when the song changes. */
     private val _nudge = MutableStateFlow(0L)
@@ -145,7 +175,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val prev = lastLoad
             lastLoad = t.key to r.second
             val sameSong = prev?.first == t.key
-            val isRetry = sameSong && prev?.second != r.second && r.first == t.key
+            val isRetry = sameSong && prev.second != r.second && r.first == t.key
             if (!sameSong) _nudge.value = 0
             // A reload keeps the current words on screen until the fresh result arrives.
             val kept = lastLoaded?.takeIf { isRetry && it.first == t.key }?.second
@@ -196,6 +226,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     ) retryLyrics()
                 }
         }
+        // A song found with the mic has no player to follow, so keep checking the mic: about once
+        // a minute to stay in time, and more often around the end, when the next song starts.
+        viewModelScope.launch {
+            combine(_mode, foreground, _clockPaused, settings.state.map { it.autoListen }.distinctUntilChanged()) { m, fg, paused, auto ->
+                m == Mode.RECOGNIZED && fg && !paused && auto
+            }.distinctUntilChanged().collectLatest { on ->
+                while (on) {
+                    delay(nextCheckDelayMs())
+                    if (!hasMic()) break
+                    launchRelisten(manual = false)?.join()
+                }
+            }
+        }
         media.refresh()
         // A route change (headphones picked in the output switcher, say) usually comes with a
         // pause or a new track, so check the output again whenever playback changes.
@@ -205,8 +248,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun onResume() {
+        foreground.value = true
         media.refresh()
         graph.audio.refresh()
+    }
+
+    fun onPause() {
+        foreground.value = false
+        // The mic is only for the screen the user is looking at.
+        relistenJob?.cancel()
     }
 
     fun refreshOutput() = graph.audio.refresh()
@@ -275,6 +325,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Drops the song found with the mic and goes back to what the phone is playing. */
     fun clearRecognized() {
         resetRecognition()
+        relistenJob?.cancel()
         _recognized.value = null
         _clockPaused.value = false
         _nudge.value = 0
@@ -291,14 +342,92 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         super.onCleared()
     }
 
+    /** Listens from the listen screen. A match goes straight to its lyrics. */
     fun startListening() {
         recognitionJob?.cancel()
+        relistenJob?.cancel()
         _recognition.value = RecognitionEvent.Listening(0f, 0)
         recognitionJob = viewModelScope.launch {
             Recognizer.listen().collect { ev ->
                 _recognition.value = ev
-                if (ev is RecognitionEvent.Found) launch { useSpotifyCover(ev.track) }
+                if (ev is RecognitionEvent.Found) {
+                    showRecognizedLyrics(ev.track)
+                    launch { useSpotifyCover(ev.track) }
+                }
             }
+        }
+    }
+
+    private fun hasMic() = ContextCompat.checkSelfPermission(getApplication(), Manifest.permission.RECORD_AUDIO) ==
+        PackageManager.PERMISSION_GRANTED
+
+    /**
+     * The detect button on the lyrics: listens again without leaving them. The same song gets its
+     * timing corrected, a different one takes over. Returns false when the mic isn't allowed, so
+     * the caller can open the listen screen, which asks for it.
+     */
+    fun relisten(): Boolean {
+        if (!hasMic()) return false
+        launchRelisten(manual = true)
+        return true
+    }
+
+    private fun launchRelisten(manual: Boolean): Job? {
+        if (recognitionJob?.isActive == true) return null
+        relistenJob?.takeIf { it.isActive }?.let { return it }
+        return viewModelScope.launch {
+            _relistening.value = true
+            if (manual) _listenNote.value = null
+            val note = try {
+                val found = Recognizer.listen().filterIsInstance<RecognitionEvent.Found>().firstOrNull()?.track
+                // With no match the lyrics simply carry on from what was heard last time.
+                if (found == null) ListenNote.NO_MATCH else applyRelisten(found, manual)
+            } finally {
+                _relistening.value = false
+            }
+            if (manual) {
+                _listenNote.value = note
+                delay(2_500)
+                _listenNote.value = null
+            }
+        }.also { relistenJob = it }
+    }
+
+    private fun applyRelisten(found: RecognizedTrack, manual: Boolean): ListenNote {
+        val cur = _recognized.value
+        if (cur == null || _mode.value != Mode.RECOGNIZED || !sameSong(cur, found)) {
+            showRecognizedLyrics(found)
+            viewModelScope.launch { useSpotifyCover(found) }
+            return ListenNote.NEW_SONG
+        }
+        val now = SystemClock.elapsedRealtime()
+        val shown = if (_clockPaused.value) pausedAtPosition else cur.positionMs + (now - cur.anchorRealtime)
+        val heard = found.positionMs + (now - found.anchorRealtime)
+        // Each match is only good to a fraction of a second, so the automatic check leaves small
+        // differences alone instead of making the lyrics twitch every minute.
+        if (manual || abs(heard - shown) > AUTO_RESYNC_MS) {
+            _clockPaused.value = false
+            _recognized.value = cur.copy(positionMs = found.positionMs, anchorRealtime = found.anchorRealtime)
+        }
+        return ListenNote.RESYNCED
+    }
+
+    private fun sameSong(a: RecognizedTrack, b: RecognizedTrack) =
+        TextMatch.normalize(a.title) == TextMatch.normalize(b.title) && TextMatch.normalize(a.artist) == TextMatch.normalize(b.artist)
+
+    /** How long to wait before the next automatic check. */
+    private fun nextCheckDelayMs(): Long {
+        val end = (lyrics.value as? LyricsState.Loaded)?.lyrics
+            ?.takeIf { it.sync != SyncType.NONE }?.lines?.lastOrNull()?.endMs
+            ?: return CHECK_MS
+        val left = end - positionMs()
+        return when {
+            left > CHECK_MS + END_LEAD_MS -> CHECK_MS
+            // Wake up a little after the last line instead of in the middle of it.
+            left > 0 -> left + END_LEAD_MS
+            // The song is ending or over: the next one can start any moment.
+            left > -AFTER_END_WINDOW_MS -> AFTER_END_CHECK_MS
+            else -> CHECK_MS
         }
     }
 
@@ -319,7 +448,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * Without a sign-in, Shazam's cover is used at its largest size.
      */
     private suspend fun useSpotifyCover(found: RecognizedTrack) {
-        val match = runCatching {
+        val match = catching {
             spotifyCatalog.findMatch(TrackQuery(found.title, found.artist, found.album))
         }.getOrNull()
         val cover = match?.coverUrl ?: largerShazamCover(found.coverUrl)
@@ -336,8 +465,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val spotifyCatalog = SpotifyLyricsProvider()
 
-    /** "Lyrics" pressed on a recognition result. */
-    fun showRecognizedLyrics(track: RecognizedTrack) {
+    /** Puts a song found with the mic on screen. */
+    private fun showRecognizedLyrics(track: RecognizedTrack) {
         _clockPaused.value = false
         _recognized.value = track
         playingKeyAtSwitch = playingKey()

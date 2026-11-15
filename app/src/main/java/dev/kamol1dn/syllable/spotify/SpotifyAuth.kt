@@ -42,7 +42,8 @@ object SpotifyAuth {
     private lateinit var appContext: Context
     @Volatile private var token: String? = null
     @Volatile private var tokenTime = 0L
-    private var pendingToken: CompletableDeferred<String>? = null
+    // Completed from a WebView worker thread, so it has to be visible there.
+    @Volatile private var pendingToken: CompletableDeferred<String>? = null
     private val refreshLock = Mutex()
 
     fun init(context: Context) {
@@ -70,7 +71,8 @@ object SpotifyAuth {
     /** Called from WebViews whenever the web player sends an authorised request. */
     fun onTokenSeen(raw: String) {
         val t = raw.removePrefix("Bearer ").removePrefix("bearer ").trim()
-        if (t.length < 40 || t == token) {
+        if (t.length < 40) return // not a real token
+        if (t == token) {
             pendingToken?.complete(t)
             return
         }
@@ -119,14 +121,15 @@ object SpotifyAuth {
         val web = WebView(appContext)
         configure(web)
         web.loadUrl(PLAYER_URL)
-        val result = withTimeoutOrNull(25_000) { deferred.await() }
-        pendingToken = null
-        Handler(Looper.getMainLooper()).post {
+        try {
+            withTimeoutOrNull(25_000) { deferred.await() }
+        } finally {
+            // Also when the lookup is cancelled (the song changed), or the web player would keep running.
+            pendingToken = null
             web.stopLoading()
             web.destroy()
+            refreshState()
         }
-        refreshState()
-        result
     }
 
     /** Shared WebView setup for the sign-in screen and headless refresh. */
@@ -143,12 +146,14 @@ object SpotifyAuth {
             userAgentString = Net.BROWSER_UA
             loadWithOverviewMode = true
             useWideViewPort = true
+            allowFileAccess = false
+            allowContentAccess = false
         }
         web.addJavascriptInterface(SpotifyTokenBridge, "SyllableBridge")
         web.webViewClient = object : WebViewClient() {
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
                 val host = request.url.host.orEmpty()
-                if (host.endsWith("spotify.com")) {
+                if (host == "spotify.com" || host.endsWith(".spotify.com")) {
                     request.requestHeaders.entries
                         .firstOrNull { it.key.equals("authorization", ignoreCase = true) }
                         ?.value?.takeIf { it.startsWith("Bearer ", ignoreCase = true) }

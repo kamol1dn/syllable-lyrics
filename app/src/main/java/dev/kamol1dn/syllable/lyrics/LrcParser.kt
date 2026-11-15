@@ -3,7 +3,7 @@ package dev.kamol1dn.syllable.lyrics
 import kotlin.math.max
 import kotlin.math.min
 
-/** Parses plain and "enhanced" (A2 / word-tagged) LRC, and estimates word timing for line-only lyrics. */
+/** Parses plain and "enhanced" (A2 / word-tagged) LRC. Line-only lyrics stay line-only: no word timing is made up. */
 object LrcParser {
 
     private val lineTag = Regex("""\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?]""")
@@ -52,7 +52,7 @@ object LrcParser {
             } else {
                 val text = r.body.replace(wordTag, "").trim()
                 if (text.isEmpty()) continue
-                lines += estimateLine(text, r.start, nextStart)
+                lines += wholeLine(text, r.start, nextStart)
             }
         }
         if (lines.isEmpty()) return null
@@ -86,42 +86,13 @@ object LrcParser {
         return out.filter { it.text.isNotBlank() || it.text.isNotEmpty() }
     }
 
-    /** Spreads a line's words over a plausible sung duration, weighted by word length. */
-    fun estimateLine(text: String, start: Long, nextStart: Long): LyricLine {
-        val tokens = tokenize(text)
-        val available = max(300L, nextStart - start)
-        val wordCount = tokens.count { it.isNotBlank() }
-        // ~3 words/second, never stretched across a long instrumental gap.
-        val sung = min(available - 150, max(900L, wordCount * 330L + text.length * 12L)).coerceAtLeast(250L)
-        val weights = tokens.map { w -> w.trim().count { it.isLetterOrDigit() } + 2.0 }
-        val total = weights.sum()
-        var t = start.toDouble()
-        val words = tokens.mapIndexed { i, w ->
-            val d = sung * weights[i] / total
-            val word = LyricWord(w, t.toLong(), (t + d).toLong())
-            t += d
-            word
-        }
-        return LyricLine(start, start + sung, words)
-    }
-
-    /** Splits into words keeping trailing spaces; CJK text is split per character. */
-    fun tokenize(text: String): List<String> {
-        val out = mutableListOf<String>()
-        val sb = StringBuilder()
-        for (ch in text) {
-            if (isCjk(ch)) {
-                if (sb.isNotEmpty()) { out += sb.toString(); sb.clear() }
-                out += ch.toString()
-            } else if (ch == ' ') {
-                sb.append(ch)
-                out += sb.toString(); sb.clear()
-            } else {
-                sb.append(ch)
-            }
-        }
-        if (sb.isNotEmpty()) out += sb.toString()
-        return out.filter { it.isNotEmpty() }
+    /**
+     * A line with line timing only: one piece of text lit as a whole from [start] to [end].
+     * [end] is the provider's end time, or the start of the next line when it gives none.
+     */
+    fun wholeLine(text: String, start: Long, end: Long): LyricLine {
+        val e = max(end, start + 1)
+        return LyricLine(start, e, listOf(LyricWord(text, start, e)))
     }
 
     internal fun isCjk(c: Char): Boolean {

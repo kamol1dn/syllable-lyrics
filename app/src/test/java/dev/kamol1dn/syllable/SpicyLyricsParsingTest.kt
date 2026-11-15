@@ -67,7 +67,8 @@ class SpicyLyricsParsingTest {
         assertTrue(l.credits.isEmpty())
         assertEquals("First line here", l.lines[0].text)
         assertEquals(1_000L, l.lines[0].startMs)
-        assertTrue(l.lines[0].words.last().endMs <= 3_500L)
+        assertEquals(1, l.lines[0].words.size)
+        assertEquals(3_500L, l.lines[0].endMs)
         assertTrue(l.lines[1].oppositeAligned)
     }
 

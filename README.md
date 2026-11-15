@@ -34,7 +34,7 @@ Syllable tries these in order and uses the first one with timing for each word. 
 | NetEase Cloud Music | Word or line | Has lots of Western and Asian songs. |
 | LRCLIB | Line, sometimes word | Always on. |
 
-If a song only has line timing, Syllable guesses when each word is sung from its length.
+If a song only has line timing, it lights up line by line; no word timing is made up.
 
 ### Spicy Lyrics key
 
