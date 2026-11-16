@@ -12,15 +12,42 @@ Syllable is an Android app that shows the lyrics of the song you're listening to
 
 The song in the screenshots is "Amazing Grace", whose words are in the public domain. The cover is a test image.
 
+## Install
+
+Syllable isn't on Google Play. You install it from the APK file on the releases page. It needs Android 8.0 or newer.
+
+1. On your phone, open the [latest release](https://github.com/kamol1dn/syllable-lyrics/releases/latest) and download `Syllable-x.y.z.apk`.
+2. Open the downloaded file. The first time, Android asks you to let your browser or file manager install apps. Allow it and go back.
+3. Tap **Install**.
+4. Open Syllable and tap **Allow notification access**. That is how it sees which song is playing. On Android 13 and newer the switch can be greyed out for an app installed from a file: open the app's **App info** page, tap the three dots at the top right, choose **Allow restricted settings**, then turn the switch on. Syllable shows this hint when you need it.
+
+To update, install a newer APK over the old one. Your settings stay.
+
+### If Google Play Protect blocks the install
+
+Play Protect doesn't know Syllable, because it comes from outside Google Play and its developer isn't registered with Google. An app that asks for notification access gets extra attention, and Syllable can't work without it. So you may see a warning, or the install may be refused.
+
+- If the warning has **More details** or **Install anyway**, use that.
+- Newer Android versions have a one-time setting that allows apps from unverified developers. If the install is refused outright, Android points you to it.
+- With a computer you can install over USB instead: `adb install -r Syllable-x.y.z.apk`.
+
+You don't need to turn Play Protect off. If you did turn it off to get Syllable installed, turn it back on afterwards; Syllable keeps working.
+
+If you'd rather not trust a prebuilt file, the whole source is here and you can [build it yourself](#build). Every release APK is signed with the same key, whose SHA-256 fingerprint is:
+
+```
+5E:1C:84:E9:B0:82:4A:6B:4C:63:84:AE:02:9B:1A:E3:D9:7B:B7:F3:28:E3:BC:FD:AF:96:20:54:0D:A1:3D:8D
+```
+
 ## Features
 
 - **Now playing.** Give Syllable notification access and it picks up the song from any music app (Spotify, YouTube Music, Chrome and others), along with how far into the song you are. Tap a line to jump to it. The bar at the bottom has play, pause and skip.
-- **Identify a song.** Tap the listen button and Syllable uses the mic to find the song playing near you, like Shazam. Then press **Lyrics**. The lyrics start at the right spot. If they drift, you can pause them or shift them earlier or later.
+- **Identify a song.** Tap the listen button and Syllable uses the mic to find the song playing near you, like Shazam. The lyrics open at the right spot as soon as it finds a match. While they are on screen it listens again about once a minute, and more often near the end, to stay in time and to catch the next song. You can turn that off in Settings. Tap the listen button on the lyrics to check again right away.
 - **Word by word.** Each word fills in as it's sung, and long notes glow. Lines move in a soft wave as the song goes on.
 - **Timing per device.** Syllable knows whether you're listening on the phone speaker, wired or USB headphones, Bluetooth, or casting to another device. If the lyrics run early or late, shift them once with the timing button and Syllable remembers it for that device. Bluetooth devices start with lyrics 0.2s later, since Bluetooth audio arrives a little late. You can change that default, or forget a saved device, in Settings.
 - **Duets and background vocals.** With Spicy Lyrics, a second singer's lines sit on the right, and background vocals fill in under the main line at their own pace.
 - **Moving background.** The album art is blurred into a slowly flowing gradient, like the Spicy Lyrics extension for Spotify. It slows down when the music is paused. For songs found with the mic, Syllable uses Spotify's album art when you're signed in.
-- **Landscape.** Turn your phone sideways to see the album art and controls next to the lyrics.
+- **Landscape.** Turn your phone sideways for a full-screen view with the album art and controls next to the lyrics. It suits a phone on a stand.
 
 ## Where the lyrics come from
 
@@ -69,6 +96,8 @@ keyPassword=…
 ```
 
 If the file is missing, release builds use the debug key.
+
+Releases are built by GitHub Actions. Pushing a tag like `v1.2.1` runs the tests, builds the signed APK and publishes it with the notes in `docs/releases/`.
 
 ## Notes
 
