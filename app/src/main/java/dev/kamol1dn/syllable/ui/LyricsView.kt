@@ -30,7 +30,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -51,12 +50,14 @@ import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.GraphicsLayerScope
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.Placeable
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -72,6 +73,7 @@ import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.offset
 import androidx.compose.ui.unit.sp
 import dev.kamol1dn.syllable.lyrics.LyricLine
 import dev.kamol1dn.syllable.lyrics.LyricWord
@@ -381,7 +383,7 @@ private fun LineView(
     Box(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            // Not clipped to a shape: the glow of a sung word has to be able to spill past the line.
             .then(if (onClick != null) Modifier.clickable(onClickLabel = "Play from here", onClick = onClick) else Modifier)
             // One node per line for TalkBack, instead of one per word.
             .clearAndSetSemantics {
@@ -391,7 +393,11 @@ private fun LineView(
             .graphicsLayer {
                 alpha = lineAlpha.value
                 val r = with(density) { blurDp.value.dp.toPx() }
-                renderEffect = if (r > 0.5f && Build.VERSION.SDK_INT >= 31) BlurEffect(r, r, TileMode.Decal) else null
+                val blurred = r > 0.5f && Build.VERSION.SDK_INT >= 31
+                renderEffect = if (blurred) BlurEffect(r, r, TileMode.Decal) else null
+                // A line that is fading but not blurred (it just finished) still has glows settling,
+                // so it fades without a buffer that would crop them.
+                compositingStrategy = if (blurred) CompositingStrategy.Auto else CompositingStrategy.ModulateAlpha
             },
     ) {
         Column(
@@ -407,7 +413,14 @@ private fun LineView(
                     if (line.background.isNotEmpty()) {
                         val bgGroups = remember(line) { wordGroups(line.background) }
                         Spacer(Modifier.height(2.dp))
-                        BalancedFlow(end, Modifier.graphicsLayer { alpha = 0.8f }) {
+                        // Dimmed without its own buffer, which would cut the glow off at the row's edge.
+                        BalancedFlow(
+                            end,
+                            Modifier.graphicsLayer {
+                                alpha = 0.8f
+                                compositingStrategy = CompositingStrategy.ModulateAlpha
+                            },
+                        ) {
                             bgGroups.forEach { WordGroup(it, clock, bgStyle, animated, isPast) }
                         }
                     }
@@ -543,7 +556,14 @@ private fun CreditsView(lyrics: Lyrics, active: Boolean, horizontalPadding: Dp) 
     val alpha by animateFloatAsState(if (active) 0.8f else 0.65f, tween(700), label = "credits")
     val link = TextLinkStyles(SpanStyle(color = Color.White.copy(alpha = 0.85f), fontWeight = FontWeight.SemiBold))
     val text = buildAnnotatedString {
-        append("From ")
+        append(
+            when (lyrics.sync) {
+                SyncType.WORD -> "Word timing"
+                SyncType.LINE -> "Line timing"
+                SyncType.NONE -> "Plain lyrics"
+            },
+        )
+        append(" from ")
         append(lyrics.source)
         lyrics.credits.forEachIndexed { i, c ->
             append(if (i == 0) " · " else ", ")
@@ -595,6 +615,20 @@ private fun letters(text: String): List<String> {
 
 private val canGlow = Build.VERSION.SDK_INT >= 31
 
+/**
+ * A blurred copy of the text behind it. A blur is cut off at the edge of its layer, which for a
+ * layer the size of the text shows as a pale box around each word. So the layer gets [bleed] of
+ * empty room on every side to fade out in, without the text taking any more space in the line.
+ */
+private fun Modifier.glow(bleed: Dp, block: GraphicsLayerScope.() -> Unit) = this
+    .layout { measurable, constraints ->
+        val pad = bleed.roundToPx()
+        val p = measurable.measure(constraints.offset(2 * pad, 2 * pad))
+        layout(p.width - 2 * pad, p.height - 2 * pad) { p.place(-pad, -pad) }
+    }
+    .graphicsLayer(block)
+    .padding(bleed)
+
 /** Waiting words sit slightly small and low; sung ones rest at full size. */
 private fun Modifier.restPose(isPast: Boolean, em: Float) = graphicsLayer {
     val s = if (isPast) 1f else REST_SCALE
@@ -631,7 +665,7 @@ private fun Syllable(word: LyricWord, clock: Clock, style: TextStyle, animated: 
         if (canGlow) {
             Text(
                 word.text, style = style, softWrap = false, maxLines = 1,
-                modifier = Modifier.graphicsLayer {
+                modifier = Modifier.glow(16.dp) {
                     motion.step(clock.frame.value, clock.pos.value)
                     alpha = (motion.glow * 0.35f).coerceIn(0f, 1f)
                     renderEffect = BlurEffect(glowRadius, glowRadius, TileMode.Decal)
@@ -692,7 +726,7 @@ private fun HeldWord(word: LyricWord, clock: Clock, style: TextStyle, animated: 
                 if (canGlow) {
                     Text(
                         letter, style = style, softWrap = false, maxLines = 1,
-                        modifier = Modifier.graphicsLayer {
+                        modifier = Modifier.glow(28.dp) {
                             motion.step(clock.frame.value, clock.pos.value)
                             alpha = (motion.glow(i) * 1.85f).coerceIn(0f, 1f)
                             renderEffect = BlurEffect(glowRadius, glowRadius, TileMode.Decal)

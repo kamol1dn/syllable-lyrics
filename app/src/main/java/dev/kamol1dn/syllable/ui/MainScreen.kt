@@ -40,6 +40,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -69,7 +70,6 @@ import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.TextButton
 import androidx.compose.foundation.layout.FlowRow
@@ -223,7 +223,7 @@ fun MainScreen(vm: MainViewModel, onListen: () -> Unit, onSettings: () -> Unit, 
                         // song named under it, above the controls.
                         Column(
                             Modifier.width((boxW * 0.34f).coerceIn(300.dp, 340.dp)).fillMaxHeight()
-                                .padding(start = 20.dp, end = 4.dp, top = 16.dp, bottom = 4.dp),
+                                .padding(start = 20.dp, end = 12.dp, top = 16.dp, bottom = 4.dp),
                         ) {
                             BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
                                 // The cover's top left corner stays put. It takes whatever height is
@@ -231,13 +231,13 @@ fun MainScreen(vm: MainViewModel, onListen: () -> Unit, onSettings: () -> Unit, 
                                 // timing controls close and shrinks back into it when they open.
                                 val top = 28.dp
                                 val cover by animateDpAsState(
-                                    (maxHeight - top - 100.dp).coerceIn(48.dp, maxWidth - 16.dp),
+                                    (maxHeight - top - 78.dp).coerceIn(48.dp, maxWidth - 16.dp),
                                     spring(stiffness = Spring.StiffnessLow), label = "cover",
                                 )
                                 Column(Modifier.padding(top = top)) {
                                     Artwork(artwork, cover, MaterialTheme.shapes.small, openPlayer)
                                     Spacer(Modifier.height(12.dp))
-                                    TrackText(shown, lyricsState, titleSize = 19.sp)
+                                    TrackText(shown, titleSize = 19.sp)
                                 }
                             }
                             ModeChips(vm, Modifier.padding(top = 10.dp))
@@ -258,7 +258,7 @@ fun MainScreen(vm: MainViewModel, onListen: () -> Unit, onSettings: () -> Unit, 
                         ) {
                             Artwork(artwork, 52.dp, MaterialTheme.shapes.small, openPlayer)
                             Spacer(Modifier.width(12.dp))
-                            TrackText(shown, lyricsState, titleSize = 17.sp, modifier = Modifier.weight(1f))
+                            TrackText(shown, titleSize = 17.sp, modifier = Modifier.weight(1f))
                         }
                         ModeChips(vm, Modifier.padding(start = 20.dp, top = 8.dp))
                         LyricsArea(vm, lyricsState, onDetect, onSpotifyLogin, songOver, modifier = Modifier.weight(1f).fillMaxWidth().padding(top = 8.dp))
@@ -293,7 +293,7 @@ private fun Artwork(artwork: Bitmap?, size: Dp, shape: Shape, onClick: (() -> Un
 
 /** Title and artist; slides to the new song when the track changes. */
 @Composable
-private fun TrackText(track: TrackInfo, lyricsState: LyricsState, titleSize: TextUnit, modifier: Modifier = Modifier) {
+private fun TrackText(track: TrackInfo, titleSize: TextUnit, modifier: Modifier = Modifier) {
     Column(modifier) {
         AnimatedContent(
             targetState = track,
@@ -309,7 +309,6 @@ private fun TrackText(track: TrackInfo, lyricsState: LyricsState, titleSize: Tex
                 Text(tr.artist, color = Color.White.copy(alpha = 0.8f), fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
-        SourceLabel(lyricsState)
     }
 }
 
@@ -441,7 +440,10 @@ private fun SyncSection(vm: MainViewModel, show: Boolean, compact: Boolean) {
         enter = expandVertically(spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(),
         exit = shrinkVertically(tween(250)) + fadeOut(tween(200)),
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+        Column(
+            horizontalAlignment = if (compact) Alignment.Start else Alignment.CenterHorizontally,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
             SyncBar(timing.offsetMs, compact, onNudge = vm::nudge)
             TimingTarget(timing, onReset = vm::resetTiming)
         }
@@ -505,7 +507,7 @@ private fun Controls(
     /** Slightly smaller buttons, for the narrow landscape panel. */
     compact: Boolean = false,
 ) {
-    val slot = if (compact) 40.dp else 44.dp
+    val slot = if (compact) 36.dp else 44.dp
     val np by vm.nowPlaying.collectAsStateWithLifecycle()
     val mode by vm.mode.collectAsStateWithLifecycle()
     val clockPaused by vm.clockPaused.collectAsStateWithLifecycle()
@@ -514,7 +516,10 @@ private fun Controls(
     val recognized = mode == Mode.RECOGNIZED
     val soft = Color.White.copy(alpha = 0.8f)
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = if (compact) 0.dp else 8.dp, vertical = 8.dp),
+        // In the side panel the row is pulled left by an icon's inset, so the first icon itself,
+        // not its touch area, lines up with the cover and the text above it.
+        Modifier.fillMaxWidth().padding(horizontal = if (compact) 0.dp else 8.dp, vertical = 8.dp)
+            .offset(x = if (compact) -(slot - 24.dp) / 2 else 0.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
@@ -600,31 +605,6 @@ private fun PlayButton(playing: Boolean, playLabel: String, pauseLabel: String, 
 }
 
 @Composable
-private fun SourceLabel(state: LyricsState) {
-    val text = when (state) {
-        is LyricsState.Loaded -> when (state.lyrics.sync) {
-            SyncType.WORD -> "Word timing · ${state.lyrics.source}"
-            SyncType.LINE -> "Line timing · ${state.lyrics.source}"
-            SyncType.NONE -> "Plain lyrics · ${state.lyrics.source}"
-        }
-        LyricsState.Loading -> "Searching lyrics…"
-        else -> "" // the message in the middle says it
-    }
-    val pending = state is LyricsState.Loaded && !state.final
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Crossfade(text, label = "source", modifier = Modifier.weight(1f, fill = false)) { s ->
-            if (s.isNotEmpty()) Text(s, color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-        AnimatedVisibility(pending, enter = fadeIn(), exit = fadeOut()) {
-            CircularProgressIndicator(
-                Modifier.padding(start = 6.dp).size(10.dp).semantics { contentDescription = "Checking more sources" },
-                color = Color.White.copy(alpha = 0.7f), strokeWidth = 1.5.dp,
-            )
-        }
-    }
-}
-
-@Composable
 private fun ModeChip(label: String, selected: Boolean, onClick: () -> Unit) {
     val bg by androidx.compose.animation.animateColorAsState(
         if (selected) Color.White else Color.White.copy(alpha = 0.14f), tween(250), label = "chipBg",
@@ -649,7 +629,7 @@ private fun SyncBar(nudge: Long, compact: Boolean, onNudge: (Long) -> Unit) {
     val buttonMin = if (compact) 76.dp else 104.dp
     FlowRow(
         Modifier.fillMaxWidth().padding(horizontal = if (compact) 0.dp else 20.dp),
-        horizontalArrangement = Arrangement.Center,
+        horizontalArrangement = if (compact) Arrangement.Start else Arrangement.Center,
         verticalArrangement = Arrangement.spacedBy(8.dp),
         itemVerticalAlignment = Alignment.CenterVertically,
     ) {
