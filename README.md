@@ -3,14 +3,14 @@
 Syllable is an Android app that shows the lyrics of the song you're listening to and highlights each word as it's sung.
 
 <p>
-  <img src="docs/screenshots/now-playing.jpg" width="240" alt="Lyrics for the song playing, with the current word lighting up">
+  <img src="docs/screenshots/now-playing.jpg" width="240" alt="Lyrics for the song playing: two singers on the left and right, with the current word lighting up">
   <img src="docs/screenshots/listen.jpg" width="240" alt="Listening for a song through the mic">
-  <img src="docs/screenshots/settings.jpg" width="240" alt="Settings, with Spotify sign-in and lyrics sources">
+  <img src="docs/screenshots/settings.jpg" width="240" alt="Settings: text size, listening for the next song, and timing per audio device">
 </p>
 
-<img src="docs/screenshots/landscape.jpg" width="732" alt="Landscape: album art and controls on the left, lyrics on the right">
+<img src="docs/screenshots/landscape.jpg" width="732" alt="Landscape: album art and controls on the left, lyrics on the right with a second singer and background vocals">
 
-The song in the screenshots is "Amazing Grace", whose words are in the public domain. The cover is a test image.
+The screenshots show "Die With A Smile" by Lady Gaga and Bruno Mars and "Dracula" by Tame Impala and JENNIE, with lyrics from Spicy Lyrics. Lyrics and cover art belong to their owners.
 
 ## Install
 
