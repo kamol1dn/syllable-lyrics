@@ -188,6 +188,10 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit, onSpotifyLogin: () -> 
                         subtitle = if (canBlur) null else "Needs Android 12 or newer", enabled = canBlur,
                     ) { v -> vm.settings.update { it.copy(blurInactive = v) } }
                     Toggle("Keep screen on while lyrics play", s.keepScreenOn) { v -> vm.settings.update { it.copy(keepScreenOn = v) } }
+                    Toggle(
+                        "Carry on from song to song", s.continuousLyrics,
+                        subtitle = "With Spotify, the next song's lines follow in the same list, through its mixes too",
+                    ) { v -> vm.settings.update { it.copy(continuousLyrics = v) } }
                 }
 
                 Section("Songs found with the mic")
@@ -267,13 +271,8 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit, onSpotifyLogin: () -> 
                         Toggle("Use Spotify lyrics", s.useSpotify, subtitle = "Also helps Spicy Lyrics find the right song") { v ->
                             vm.settings.update { it.copy(useSpotify = v) }
                         }
-                        Toggle(
-                            "Follow mixed playlists", s.mixTransitions,
-                            subtitle = "Experimental. When Spotify mixes one song into the next, the lyrics run on as one list. " +
-                                "Reads the transitions saved in the playlist you are playing, and picks up a mix " +
-                                "Spotify makes on the spot as it happens.",
-                        ) { v -> vm.settings.update { it.copy(mixTransitions = v) } }
-                        if (s.mixTransitions) {
+                        // Lyrics that carry on from song to song follow a mixed playlist's own transitions.
+                        if (s.continuousLyrics) {
                             val mix by vm.mixStatus.collectAsStateWithLifecycle()
                             val np by vm.nowPlaying.collectAsStateWithLifecycle()
                             val canRead = np?.spotifyPlaylistId != null && !mix.reading
@@ -284,8 +283,8 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit, onSpotifyLogin: () -> 
                                         mix.problem != null && mix.transitions > 0 ->
                                             "Spotify didn't answer. Using the ${mix.transitions} transitions saved before."
                                         mix.problem != null -> "Spotify didn't answer, so nothing is saved yet."
-                                        mix.transitions == 0 -> "Nothing saved yet. Play a mixed playlist in Spotify and its transitions are read."
-                                        else -> "${if (mix.transitions == 1) "1 transition" else "${mix.transitions} transitions"} saved from " +
+                                        mix.transitions == 0 -> "Play a mixed playlist in Spotify and its transitions are read, so the lyrics follow them."
+                                        else -> "${if (mix.transitions == 1) "1 transition" else "${mix.transitions} transitions"} read from " +
                                             "${if (mix.playlists == 1) "1 mixed playlist" else "${mix.playlists} mixed playlists"}."
                                     },
                                     Modifier.weight(1f),

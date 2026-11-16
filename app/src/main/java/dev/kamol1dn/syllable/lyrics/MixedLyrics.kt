@@ -17,9 +17,21 @@ private const val LEAD_IN_MS = 300L
  * since half a line reads worse than a line that outlasts its voice by a moment. During the
  * overlap the lines of both songs simply alternate by time.
  *
- * Without timing on both sides there is nothing to line up, and null comes back.
+ * With [underWay] the incoming song was found already playing at [startBMs] rather than planned
+ * to come in there, so a line it is in the middle of is kept as well.
+ *
+ * Without timing on both sides there is nothing to line up, and null comes back. So it does when
+ * the incoming song has no lines left to add, since then there is nothing to go on to.
  */
-fun joinMixed(soFar: Lyrics, incoming: Lyrics, part: Int, startBMs: Long, shiftMs: Long, overlapEndMs: Long): Lyrics? {
+fun joinMixed(
+    soFar: Lyrics,
+    incoming: Lyrics,
+    part: Int,
+    startBMs: Long,
+    shiftMs: Long,
+    overlapEndMs: Long,
+    underWay: Boolean = false,
+): Lyrics? {
     if (soFar.sync == SyncType.NONE || incoming.sync == SyncType.NONE) return null
     fun List<LyricWord>.shifted() = map { it.copy(startMs = it.startMs + shiftMs, endMs = it.endMs + shiftMs) }
 
@@ -31,7 +43,7 @@ fun joinMixed(soFar: Lyrics, incoming: Lyrics, part: Int, startBMs: Long, shiftM
         .filterNot { it.part == part - 1 && it.startMs >= overlapEndMs - TOO_LATE_MS }
         .map { if (markOld) it.copy(lineTimed = true) else it }
     val added = incoming.lines
-        .filter { it.startMs >= startBMs - LEAD_IN_MS && it.words.isNotEmpty() }
+        .filter { (it.startMs >= startBMs - LEAD_IN_MS || (underWay && it.endMs > startBMs)) && it.words.isNotEmpty() }
         .map { line ->
             line.copy(
                 startMs = line.startMs + shiftMs,
@@ -42,6 +54,7 @@ fun joinMixed(soFar: Lyrics, incoming: Lyrics, part: Int, startBMs: Long, shiftM
                 lineTimed = markNew || line.lineTimed,
             )
         }
+    if (added.isEmpty()) return null
     // The sort is stable, so where two lines start together the outgoing song's comes first.
     return Lyrics((kept + added).sortedBy { it.startMs }, sync, incoming.source, incoming.credits)
 }

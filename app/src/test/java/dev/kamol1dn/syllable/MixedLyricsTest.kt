@@ -6,7 +6,6 @@ import dev.kamol1dn.syllable.lyrics.Lyrics
 import dev.kamol1dn.syllable.lyrics.SyncType
 import dev.kamol1dn.syllable.spotify.MixTransition
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -116,17 +115,42 @@ class MixedLyricsTest {
     }
 
     @Test
-    fun tellsAMixFromASkipByHowTheSongChanged() {
-        // The new song was already under way when it was announced.
-        assertTrue(looksMixed(newAtMs = 4_600, oldLeftMs = 18_000))
-        assertTrue(looksMixed(newAtMs = 900, oldLeftMs = null))
-        // It starts from its top, but the old one was cut short near its end.
-        assertTrue(looksMixed(newAtMs = 100, oldLeftMs = 4_300))
-        // Skipped by hand in the middle of a song.
-        assertFalse(looksMixed(newAtMs = 60, oldLeftMs = 150_000))
-        // The old song simply ended.
-        assertFalse(looksMixed(newAtMs = 0, oldLeftMs = 200))
-        assertFalse(looksMixed(newAtMs = 0, oldLeftMs = null))
+    fun aSongFoundPlayingKeepsTheLineItIsIn() {
+        // 12 s into the second song its line from 11 s is still being sung.
+        val heard = MixSession.start("A", "First", a)!!.addHeard("B", "Second", b, 199_000, 12_000)!!
+        assertEquals(listOf("comes in", "later on"), heard.lyrics.lines.filter { it.part == 1 }.map { it.text })
+        // By 14 s it is over, and the list goes on from the next one.
+        val later = MixSession.start("A", "First", a)!!.addHeard("B", "Second", b, 199_000, 14_000)!!
+        assertEquals(listOf("later on"), later.lyrics.lines.filter { it.part == 1 }.map { it.text })
+        // With no line left to sing there is nothing to go on to.
+        assertNull(MixSession.start("A", "First", a)!!.addHeard("B", "Second", b, 199_000, 160_000))
+    }
+
+    @Test
+    fun withNothingKnownTheNextSongFollowsWhenThisOneEnds() {
+        val planned = MixSession.start("A", "First", a)!!.addAfter("B", "Second", b, 215_000)!!
+        // All of both songs, the second from its top.
+        assertEquals(a.lines.size + b.lines.size, planned.lyrics.lines.size)
+        assertEquals(215_000L, planned.songs[1].shiftMs)
+        assertEquals(220_000L, planned.lyrics.lines.first { it.part == 1 }.startMs)
+        assertEquals(MixSession.Join.AFTER, planned.songs[1].join)
+    }
+
+    @Test
+    fun theLastJoinCanBeTakenBackAndMadeAgain() {
+        val solo = MixSession.start("A", "First", a)!!
+        val planned = solo.addAfter("B", "Second", b, 215_000)!!
+        assertSame(planned, planned.upTo(1))
+        assertEquals(a.lines, planned.upTo(0)!!.lyrics.lines)
+        // The player skipped on at 100 s instead: the first song's later lines go, the second follows from there.
+        val skipped = planned.upTo(0)!!.addHeard("B", "Second", b, 100_000, 0)!!
+        assertEquals(listOf("skipped", "comes in", "later on"), skipped.lyrics.lines.map { it.text })
+        assertEquals(105_000L, skipped.lyrics.lines.first().startMs)
+        assertSame(a, skipped.anchor)
+        // Only one step back is kept.
+        val longer = skipped.addAfter("C", "Third", c, 200_000)!!
+        assertEquals(2, longer.upTo(1)!!.songs.size)
+        assertNull(longer.upTo(0))
     }
 
     @Test

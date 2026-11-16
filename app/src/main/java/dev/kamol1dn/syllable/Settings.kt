@@ -32,11 +32,10 @@ data class SettingsState(
     /** While a mic-identified song is on screen, listen again now and then to stay in sync and catch the next song. */
     val autoListen: Boolean = true,
     /**
-     * Experimental: follow the transitions of mixed Spotify playlists, with the lyrics running on
-     * from one song into the next as one list. Off unless asked for, since it reads the playlist
-     * that is playing from the account.
+     * The lyrics run on from one song into the next as one list, through Spotify's mixes too.
+     * When signed in, the transitions saved in the playlist that is playing are read for it.
      */
-    val mixTransitions: Boolean = false,
+    val continuousLyrics: Boolean = true,
 ) {
     fun defaultOffset(kind: OutputKind): Long = if (kind == OutputKind.BLUETOOTH) bluetoothDefaultMs else 0L
 
@@ -73,7 +72,7 @@ class Settings(context: Context) {
         blurInactive = prefs.getBoolean("blur", true),
         keepScreenOn = prefs.getBoolean("screen_on", true),
         autoListen = prefs.getBoolean("auto_listen", true),
-        mixTransitions = prefs.getBoolean("mix_transitions", false),
+        continuousLyrics = prefs.getBoolean("continuous_lyrics", true),
     )
 
     fun update(block: (SettingsState) -> SettingsState) {
@@ -91,7 +90,8 @@ class Settings(context: Context) {
             .putBoolean("blur", s.blurInactive)
             .putBoolean("screen_on", s.keepScreenOn)
             .putBoolean("auto_listen", s.autoListen)
-            .putBoolean("mix_transitions", s.mixTransitions)
+            .putBoolean("continuous_lyrics", s.continuousLyrics)
+            .remove("mix_transitions") // the same setting while it was an experiment and off to begin with
             .apply()
     }
 
