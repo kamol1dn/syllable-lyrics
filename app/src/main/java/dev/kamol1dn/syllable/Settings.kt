@@ -31,6 +31,11 @@ data class SettingsState(
     val keepScreenOn: Boolean = true,
     /** While a mic-identified song is on screen, listen again now and then to stay in sync and catch the next song. */
     val autoListen: Boolean = true,
+    /**
+     * Experimental: follow the transitions of mixed Spotify playlists, showing both songs' lyrics
+     * while one runs into the next. Off unless asked for, since it reads the account's playlists.
+     */
+    val mixTransitions: Boolean = false,
 ) {
     fun defaultOffset(kind: OutputKind): Long = if (kind == OutputKind.BLUETOOTH) bluetoothDefaultMs else 0L
 
@@ -67,6 +72,7 @@ class Settings(context: Context) {
         blurInactive = prefs.getBoolean("blur", true),
         keepScreenOn = prefs.getBoolean("screen_on", true),
         autoListen = prefs.getBoolean("auto_listen", true),
+        mixTransitions = prefs.getBoolean("mix_transitions", false),
     )
 
     fun update(block: (SettingsState) -> SettingsState) {
@@ -84,6 +90,7 @@ class Settings(context: Context) {
             .putBoolean("blur", s.blurInactive)
             .putBoolean("screen_on", s.keepScreenOn)
             .putBoolean("auto_listen", s.autoListen)
+            .putBoolean("mix_transitions", s.mixTransitions)
             .apply()
     }
 

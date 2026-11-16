@@ -34,7 +34,37 @@ class LyricsRepository(context: Context, private val settings: Settings) {
     // v3: line-timed lyrics no longer carry guessed word timing.
     private val cacheDir = File(context.cacheDir, "lyrics-v3").apply { mkdirs() }
     private val memory = object : LinkedHashMap<String, Lyrics>(32, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Lyrics>?) = size > 30
+        // A song fetched with a Spotify id is kept under that id as well, so twice the 30 songs.
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Lyrics>?) = size > 60
+    }
+
+    private fun cleaned(raw: TrackQuery): TrackQuery {
+        val (title, artist) = TextMatch.clean(raw.title, raw.artist)
+        return raw.copy(title = title, artist = artist)
+    }
+
+    /**
+     * Spotify's queue and the phone's media notification can spell the artists differently, which
+     * changes the usual key, so a song is also found by its Spotify id.
+     */
+    private fun idKey(q: TrackQuery) = q.spotifyTrackId?.let { "id:$it" }
+
+    private fun remember(q: TrackQuery, l: Lyrics) = synchronized(memory) {
+        memory[q.cacheKey] = l
+        idKey(q)?.let { memory[it] = l }
+    }
+
+    /** Lyrics already in memory for this song, without touching the disk or the network. */
+    fun peek(rawQuery: TrackQuery): Lyrics? {
+        val q = cleaned(rawQuery)
+        return synchronized(memory) { memory[q.cacheKey] ?: idKey(q)?.let { memory[it] } }
+    }
+
+    /** Loads a song that isn't playing yet, so it is ready the moment it starts. */
+    suspend fun prefetch(query: TrackQuery): Lyrics? {
+        var best: Lyrics? = null
+        load(query).collect { if (it is Progress.Found) best = it.lyrics }
+        return best
     }
 
     private val spotify = SpotifyLyricsProvider()
@@ -78,14 +108,13 @@ class LyricsRepository(context: Context, private val settings: Settings) {
     }
 
     fun load(rawQuery: TrackQuery, skipCache: Boolean = false): Flow<Progress> = channelFlow {
-        val (title, artist) = TextMatch.clean(rawQuery.title, rawQuery.artist)
-        val query = rawQuery.copy(title = title, artist = artist)
+        val query = cleaned(rawQuery)
         val key = query.cacheKey
 
         if (!skipCache) {
-            val cached = synchronized(memory) { memory[key] } ?: readDisk(key)
+            val cached = peek(query) ?: readDisk(key)
             if (cached != null) {
-                synchronized(memory) { memory[key] = cached }
+                remember(query, cached)
                 send(Progress.Found(cached, final = true))
                 return@channelFlow
             }
@@ -141,7 +170,7 @@ class LyricsRepository(context: Context, private val settings: Settings) {
         if (b == null) {
             send(if (failures > 0 && misses == 0) Progress.Offline else Progress.NotFound)
         } else {
-            synchronized(memory) { memory[key] = b }
+            remember(query, b)
             if (b.sync != SyncType.NONE) withContext(Dispatchers.IO) { writeDisk(key, b) }
         }
     }.flowOn(Dispatchers.Default) // keep source picking off the busy main thread

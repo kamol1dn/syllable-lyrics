@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
@@ -123,6 +124,14 @@ import dev.kamol1dn.syllable.TrackInfo
 import dev.kamol1dn.syllable.lyrics.SyncType
 import dev.kamol1dn.syllable.media.OutputKind
 
+/**
+ * A song change moves the lyrics, the cover and the song's name up together: a quick start that
+ * eases into place.
+ */
+private val SongChangeEasing = CubicBezierEasing(0.2f, 0f, 0f, 1f)
+private const val SONG_CHANGE_MS = 650
+private fun <T> songChange() = tween<T>(SONG_CHANGE_MS, easing = SongChangeEasing)
+
 /** True when the window is wide enough to show the track panel beside the lyrics. */
 fun isWideLayout(width: Dp, height: Dp) = width > height && width >= 560.dp
 
@@ -147,6 +156,9 @@ fun MainScreen(vm: MainViewModel, onListen: () -> Unit, onSettings: () -> Unit, 
     // Artwork: from the media session, or downloaded for a recognised song.
     val remoteArt = rememberCoverBitmap(track?.coverUrl, track?.key)
     val artwork = track?.artwork ?: remoteArt
+    // The next song's cover is blurred ahead of time, so the background changes with the song.
+    val nextCover = vm.upNext.collectAsStateWithLifecycle().value?.cover
+    LaunchedEffect(nextCover) { if (nextCover != null) warmCover(nextCover) }
     var showSync by rememberSaveable { mutableStateOf(false) }
     val t = track
 
@@ -235,7 +247,7 @@ fun MainScreen(vm: MainViewModel, onListen: () -> Unit, onSettings: () -> Unit, 
                                     spring(stiffness = Spring.StiffnessLow), label = "cover",
                                 )
                                 Column(Modifier.padding(top = top)) {
-                                    Artwork(artwork, cover, MaterialTheme.shapes.small, openPlayer)
+                                    Artwork(artwork, shown.key, cover, MaterialTheme.shapes.small, openPlayer)
                                     Spacer(Modifier.height(12.dp))
                                     TrackText(shown, titleSize = 19.sp)
                                 }
@@ -256,7 +268,7 @@ fun MainScreen(vm: MainViewModel, onListen: () -> Unit, onSettings: () -> Unit, 
                             Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Artwork(artwork, 52.dp, MaterialTheme.shapes.small, openPlayer)
+                            Artwork(artwork, shown.key, 52.dp, MaterialTheme.shapes.small, openPlayer)
                             Spacer(Modifier.width(12.dp))
                             TrackText(shown, titleSize = 17.sp, modifier = Modifier.weight(1f))
                         }
@@ -272,19 +284,36 @@ fun MainScreen(vm: MainViewModel, onListen: () -> Unit, onSettings: () -> Unit, 
 }
 
 @Composable
-private fun Artwork(artwork: Bitmap?, size: Dp, shape: Shape, onClick: (() -> Unit)?) {
+private fun Artwork(artwork: Bitmap?, trackKey: String, size: Dp, shape: Shape, onClick: (() -> Unit)?) {
+    // The song the cover on screen arrived with. A cover that arrives with another song slides up
+    // in place of the old one; a late or sharper copy for the same song only fades in. Songs from
+    // one album share a cover, which then stays where it is.
+    val shown = remember { object { var art = artwork; var key = trackKey } }
+    if (artwork !== shown.art) {
+        shown.art = artwork
+        shown.key = trackKey
+    }
     Box(
         Modifier.size(size).clip(shape).background(Color.White.copy(alpha = 0.12f))
             .semantics { contentDescription = "Album art" }
             .then(if (onClick != null) Modifier.clickable(onClickLabel = "Open player app", role = Role.Button, onClick = onClick) else Modifier),
         contentAlignment = Alignment.Center,
     ) {
-        Crossfade(artwork, animationSpec = tween(600), label = "art") { art ->
-            if (art != null) {
-                Image(remember(art) { art.asImageBitmap() }, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-            } else {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Icon(Icons.Rounded.MusicNote, null, tint = Color.White.copy(alpha = 0.7f), modifier = Modifier.size(size * 0.45f))
+        AnimatedContent(
+            targetState = shown.key to artwork,
+            contentKey = { it.first },
+            transitionSpec = {
+                slideInVertically(songChange()) { it } togetherWith slideOutVertically(songChange()) { -it }
+            },
+            label = "artSong",
+        ) { (_, current) ->
+            Crossfade(current, animationSpec = tween(600), label = "art") { art ->
+                if (art != null) {
+                    Image(remember(art) { art.asImageBitmap() }, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                } else {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Rounded.MusicNote, null, tint = Color.White.copy(alpha = 0.7f), modifier = Modifier.size(size * 0.45f))
+                    }
                 }
             }
         }
@@ -299,8 +328,8 @@ private fun TrackText(track: TrackInfo, titleSize: TextUnit, modifier: Modifier 
             targetState = track,
             contentKey = { it.key },
             transitionSpec = {
-                (slideInVertically(spring(stiffness = Spring.StiffnessLow)) { it / 2 } + fadeIn(tween(350))) togetherWith
-                    (slideOutVertically(tween(250)) { -it / 2 } + fadeOut(tween(200)))
+                (slideInVertically(songChange()) { it } + fadeIn(tween(350, delayMillis = 80))) togetherWith
+                    (slideOutVertically(songChange()) { -it } + fadeOut(tween(250)))
             },
             label = "track",
         ) { tr ->
@@ -346,13 +375,21 @@ private fun LyricsArea(
     val settings by vm.settings.state.collectAsStateWithLifecycle()
     val spotify by SpotifyAuth.state.collectAsStateWithLifecycle()
     val note by vm.listenNote.collectAsStateWithLifecycle()
+    val upNext by vm.upNext.collectAsStateWithLifecycle()
     Box(modifier) {
         AnimatedContent(
             targetState = lyricsState,
             contentKey = { if (it is LyricsState.Loaded) it.lyrics else it::class },
             transitionSpec = {
-                (fadeIn(tween(500, delayMillis = 120)) + slideInVertically(spring(stiffness = Spring.StiffnessLow)) { it / 14 }) togetherWith
-                    fadeOut(tween(220))
+                if (initialState is LyricsState.Loaded) {
+                    // A song's lyrics give way to the next song: the old ones leave upwards and
+                    // whatever follows comes up from below, in one movement.
+                    (slideInVertically(songChange()) { it / 2 } + fadeIn(tween(450, delayMillis = 120))) togetherWith
+                        (slideOutVertically(songChange()) { -it / 2 } + fadeOut(tween(320)))
+                } else {
+                    (fadeIn(tween(500, delayMillis = 120)) + slideInVertically(spring(stiffness = Spring.StiffnessLow)) { it / 14 }) togetherWith
+                        fadeOut(tween(220))
+                }
             },
             modifier = Modifier.fillMaxSize(),
             label = "lyrics",
@@ -368,6 +405,7 @@ private fun LyricsArea(
                         modifier = Modifier.fillMaxSize(),
                         horizontalPadding = horizontalPadding,
                         anchorFraction = anchorFraction,
+                        upNext = upNext,
                     )
                     // The lyrics stay underneath, so scrolling and tap-to-seek still work.
                     AnimatedVisibility(

@@ -89,6 +89,13 @@ fun warmDefaultCover() {
 /** Recently blurred covers, so a screen that comes back shows its background right away. */
 private val preparedCovers = LruCache<Int, PreparedCover>(6)
 
+/** Blurs a cover before it is needed, so the background can start changing the moment its song starts. */
+suspend fun warmCover(art: Bitmap) {
+    if (art.isRecycled || preparedCovers[art.generationId] != null) return
+    withContext(Dispatchers.Default) { runCatching { prepareCover(art) }.getOrNull() }
+        ?.let { preparedCovers.put(art.generationId, it) }
+}
+
 /** Last background clock value, so the pattern carries on across screens. */
 private var lastClock = 0f
 

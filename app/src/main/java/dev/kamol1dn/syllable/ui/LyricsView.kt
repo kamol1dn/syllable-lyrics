@@ -75,6 +75,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.offset
 import androidx.compose.ui.unit.sp
+import dev.kamol1dn.syllable.UpNext
 import dev.kamol1dn.syllable.lyrics.LyricLine
 import dev.kamol1dn.syllable.lyrics.LyricWord
 import dev.kamol1dn.syllable.lyrics.Lyrics
@@ -181,6 +182,7 @@ fun LyricsView(
     contentPadding: PaddingValues = PaddingValues(),
     horizontalPadding: Dp = 24.dp,
     anchorFraction: Float = 0.3f,
+    upNext: UpNext? = null,
 ) {
     val rows = remember(lyrics) { buildRows(lyrics) }
     val synced = lyrics.sync != SyncType.NONE
@@ -308,7 +310,19 @@ fun LyricsView(
                 ) {
                     when (row) {
                         is Row.Gap -> GapDots(row, clock, isActive, textScale, horizontalPadding)
-                        is Row.Credits -> CreditsView(row.lyrics, isActive, horizontalPadding)
+                        is Row.Credits -> Column {
+                            CreditsView(row.lyrics, isActive, horizontalPadding)
+                            AnimatedVisibility(
+                                upNext != null,
+                                enter = fadeIn(tween(600)) + expandVertically(),
+                                exit = fadeOut() + shrinkVertically(),
+                            ) {
+                                // Keeps the last song's text while fading out.
+                                val shown = remember { mutableStateOf(upNext) }
+                                if (upNext != null) shown.value = upNext
+                                shown.value?.let { UpNextView(it, isActive, textScale, horizontalPadding) }
+                            }
+                        }
                         is Row.Line -> LineView(
                             line = row.line,
                             endMs = row.endMs,
@@ -320,7 +334,8 @@ fun LyricsView(
                             textScale = textScale,
                             blur = blurInactive && synced && !userBrowsing,
                             horizontalPadding = horizontalPadding,
-                            onClick = if (synced && onSeek != null) ({ onSeek(row.line.startMs) }) else null,
+                            // An outgoing line's time is on the next song's clock, where there is nothing of it to seek to.
+                            onClick = if (synced && onSeek != null && !row.line.outgoing) ({ onSeek(row.line.startMs) }) else null,
                         )
                     }
                 }
@@ -334,6 +349,10 @@ private val SineInOut = CubicBezierEasing(0.37f, 0f, 0.63f, 1f)
 
 /** How long a line keeps animating after it ends, so its last word can settle. */
 private const val SETTLE_MS = 900L
+
+/** How the lines of a song that is being mixed out are set apart from the song coming in. */
+private const val OUTGOING_ALPHA = 0.72f
+private const val OUTGOING_SCALE = 0.8f
 
 @Composable
 private fun LineView(
@@ -360,11 +379,13 @@ private fun LineView(
     }
     val animated = isActive || (settling && isPast)
 
+    // The song being mixed out sings on in a smaller, quieter voice beside the one coming in.
+    val voice = if (line.outgoing) OUTGOING_ALPHA else 1f
     val lineAlpha = animateFloatAsState(
         when {
-            !synced || isActive -> 1f
-            isPast -> LINE_SUNG
-            else -> LINE_NOT_SUNG
+            !synced || isActive -> voice
+            isPast -> LINE_SUNG * voice
+            else -> LINE_NOT_SUNG * voice
         },
         tween(200, easing = LineFade),
         label = "lineAlpha",
@@ -374,7 +395,9 @@ private fun LineView(
     val density = LocalDensity.current
 
     val end = line.oppositeAligned
-    val style = lyricsTextStyle(textScale).copy(textAlign = if (end) TextAlign.End else TextAlign.Start)
+    val style = lyricsTextStyle(if (line.outgoing) textScale * OUTGOING_SCALE else textScale)
+        .copy(textAlign = if (end) TextAlign.End else TextAlign.Start)
+    val lineSync = if (line.lineTimed && sync == SyncType.WORD) SyncType.LINE else sync
     val bgStyle = style.copy(
         fontSize = style.fontSize * 0.7f,
         lineHeight = style.lineHeight * 0.7f,
@@ -404,7 +427,7 @@ private fun LineView(
             Modifier.fillMaxWidth(),
             horizontalAlignment = if (end) Alignment.End else Alignment.Start,
         ) {
-            when (sync) {
+            when (lineSync) {
                 SyncType.WORD -> {
                     val groups = remember(line) { wordGroups(line.words) }
                     BalancedFlow(end) {
@@ -577,6 +600,46 @@ private fun CreditsView(lyrics: Lyrics, active: Boolean, horizontalPadding: Dp) 
         style = TextStyle(fontSize = 13.sp, lineHeight = 18.sp, color = Color.White.copy(alpha = alpha)),
         modifier = Modifier.padding(horizontal = horizontalPadding, vertical = 28.dp),
     )
+}
+
+/**
+ * The song the player has queued next and how it opens, under the credits. It comes forward once the
+ * current song has no lines left, so the wait for the next song isn't an empty screen.
+ */
+@Composable
+private fun UpNextView(next: UpNext, active: Boolean, textScale: Float, horizontalPadding: Dp) {
+    val alpha by animateFloatAsState(if (active) 1f else 0.6f, tween(700), label = "upNext")
+    val lyric = lyricsTextStyle(textScale)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .graphicsLayer { this.alpha = alpha }
+            .padding(horizontal = horizontalPadding)
+            .padding(bottom = 28.dp),
+    ) {
+        Text(
+            "UP NEXT",
+            style = TextStyle(fontSize = 12.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.2.sp, color = Color.White.copy(alpha = 0.6f)),
+        )
+        Text(
+            next.title,
+            style = lyric.copy(fontSize = lyric.fontSize * 0.7f, lineHeight = lyric.lineHeight * 0.7f, color = Color.White.copy(alpha = 0.9f)),
+            modifier = Modifier.padding(top = 6.dp),
+        )
+        if (next.artist.isNotBlank()) {
+            Text(next.artist, style = TextStyle(fontSize = 14.sp, lineHeight = 19.sp, color = Color.White.copy(alpha = 0.65f)))
+        }
+        if (next.preview.isNotEmpty()) {
+            Spacer(Modifier.height(14.dp))
+            next.preview.forEach { line ->
+                Text(
+                    line,
+                    style = lyric.copy(fontSize = lyric.fontSize * 0.7f, lineHeight = lyric.lineHeight * 0.7f, color = Color.White.copy(alpha = 0.32f)),
+                    modifier = Modifier.padding(bottom = 4.dp),
+                )
+            }
+        }
+    }
 }
 
 /** The syllables of one word, kept together so a line only wraps between words. */

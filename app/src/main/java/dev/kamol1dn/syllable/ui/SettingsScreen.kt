@@ -267,6 +267,33 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit, onSpotifyLogin: () -> 
                         Toggle("Use Spotify lyrics", s.useSpotify, subtitle = "Also helps Spicy Lyrics find the right song") { v ->
                             vm.settings.update { it.copy(useSpotify = v) }
                         }
+                        Toggle(
+                            "Follow mixed playlists", s.mixTransitions,
+                            subtitle = "Experimental. While Spotify mixes one song into the next, both songs' lyrics are " +
+                                "shown together. Reads the transitions of the playlist you are playing.",
+                        ) { v -> vm.settings.update { it.copy(mixTransitions = v) } }
+                        if (s.mixTransitions) {
+                            val mix by vm.mixStatus.collectAsStateWithLifecycle()
+                            val np by vm.nowPlaying.collectAsStateWithLifecycle()
+                            val canRead = np?.spotifyPlaylistId != null && !mix.reading
+                            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Helper(
+                                    when {
+                                        mix.reading -> "Reading the playlist…"
+                                        mix.problem != null && mix.transitions > 0 ->
+                                            "Spotify didn't answer. Using the ${mix.transitions} transitions saved before."
+                                        mix.problem != null -> "Spotify didn't answer, so nothing is saved yet."
+                                        mix.transitions == 0 -> "Nothing saved yet. Play a mixed playlist in Spotify and its transitions are read."
+                                        else -> "${if (mix.transitions == 1) "1 transition" else "${mix.transitions} transitions"} saved from " +
+                                            "${if (mix.playlists == 1) "1 mixed playlist" else "${mix.playlists} mixed playlists"}."
+                                    },
+                                    Modifier.weight(1f),
+                                )
+                                TextButton(onClick = { vm.refreshMix() }, enabled = canRead) {
+                                    Text("Read again", color = if (canRead) Accent else Color.White.copy(alpha = 0.3f))
+                                }
+                            }
+                        }
                         Spacer(Modifier.height(8.dp))
                         OutlineButton(onClick = { confirmSignOut = true }, modifier = Modifier.fillMaxWidth()) { Text("Sign out") }
                     } else {
