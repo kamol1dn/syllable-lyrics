@@ -6,6 +6,7 @@ import dev.kamol1dn.syllable.lyrics.Lyrics
 import dev.kamol1dn.syllable.lyrics.SyncType
 import dev.kamol1dn.syllable.spotify.MixTransition
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -99,6 +100,33 @@ class MixedLyricsTest {
     fun needsTimingOnBothSides() {
         assertNull(MixSession.start("A", "First", a.copy(sync = SyncType.NONE)))
         assertNull(MixSession.start("A", "First", a)!!.add("B", "Second", b.copy(sync = SyncType.NONE), ab))
+    }
+
+    @Test
+    fun aMixThatWasOnlyHeardGoesOnFromWhereBothSongsAre() {
+        // Nothing was known ahead: at 199 s of the first song the second is announced, 11.2 s in.
+        val heard = MixSession.start("A", "First", a)!!.addHeard("B", "Second", b, 199_000, 11_200)!!
+        // The first song's line that had begun stays, the ones still to come are gone with it.
+        assertEquals(listOf("long before", "sung into the mix", "comes in", "later on"), heard.lyrics.lines.map { it.text })
+        assertEquals(187_800L, heard.songs[1].shiftMs)
+        assertEquals(198_800L, heard.lyrics.lines[2].startMs)
+        assertSame(a, heard.anchor)
+        // And the run goes on from there like any other.
+        assertEquals(3, heard.add("C", "Third", c, bc)!!.songs.size)
+    }
+
+    @Test
+    fun tellsAMixFromASkipByHowTheSongChanged() {
+        // The new song was already under way when it was announced.
+        assertTrue(looksMixed(newAtMs = 4_600, oldLeftMs = 18_000))
+        assertTrue(looksMixed(newAtMs = 900, oldLeftMs = null))
+        // It starts from its top, but the old one was cut short near its end.
+        assertTrue(looksMixed(newAtMs = 100, oldLeftMs = 4_300))
+        // Skipped by hand in the middle of a song.
+        assertFalse(looksMixed(newAtMs = 60, oldLeftMs = 150_000))
+        // The old song simply ended.
+        assertFalse(looksMixed(newAtMs = 0, oldLeftMs = 200))
+        assertFalse(looksMixed(newAtMs = 0, oldLeftMs = null))
     }
 
     @Test

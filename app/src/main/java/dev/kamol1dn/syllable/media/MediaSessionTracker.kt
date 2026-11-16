@@ -43,6 +43,11 @@ data class NowPlaying(
     val isRemote: Boolean = false,
     /** The Spotify playlist the song is playing from, when Spotify's player says so. */
     val spotifyPlaylistId: String? = null,
+    /**
+     * False while the position is a stand-in: the player has announced a new song but not yet where
+     * it is in it, or a jump back to the start is being held to see whether the next song follows.
+     */
+    val positionFresh: Boolean = true,
 ) {
     fun livePosition(now: Long = SystemClock.elapsedRealtime()): Long {
         val p = if (isPlaying) positionMs + ((now - updateRealtime) * speed).toLong() else positionMs
@@ -239,6 +244,7 @@ class MediaSessionTracker(private val context: Context) {
             canSeek = st != null && (st.actions and PlaybackState.ACTION_SEEK_TO) != 0L,
             isRemote = c.playbackInfo.playbackType == MediaController.PlaybackInfo.PLAYBACK_TYPE_REMOTE,
             spotifyPlaylistId = SPOTIFY_PLAYLIST.find(md.getString(SPOTIFY_CONTEXT_URI).orEmpty())?.groupValues?.get(1),
+            positionFresh = !stale && held == null,
         )
     }
 

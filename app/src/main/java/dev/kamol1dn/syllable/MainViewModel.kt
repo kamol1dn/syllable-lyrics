@@ -111,6 +111,29 @@ private const val MIX_GRACE_MS = 1_500L
 private const val MIX_LATE_MS = 2_500L
 /** How long a tap on a line of the next song waits for the player to get there. */
 private const val MIX_SEEK_WAIT_MS = 5_000L
+/** How long a change of song waits for the player to say where the new song is. */
+private const val MIX_REPORT_WAIT_MS = 1_500L
+/** A new song reported this close to where the old one would be by now still has the old one's position. */
+private const val MIX_SAME_MS = 1_000L
+/** A song isn't mixed out this early on. A position like that is the player winding back before it moves on. */
+private const val MIX_EARLIEST_MS = 5_000L
+
+/**
+ * A change of song that may be the player mixing, with nothing known about it beforehand. Until
+ * the new song (track key [toKey]) has said where it is, the list of [run] stays on screen and
+ * keeps the time of [before], the song that was playing, so nothing moves if the list then goes on.
+ */
+private class MixWatch(val run: MixSession, val before: NowPlaying, val toKey: String) {
+    /** Where [before] would be by now, on its own clock. */
+    fun songMs(now: Long): Long = before.positionMs + ((now - before.updateRealtime) * before.speed).toLong()
+
+    /** The same on the list's clock. */
+    fun listMs(now: Long): Long = songMs(now) + run.songs.last().shiftMs
+
+    /** Whether the position [np] reports is still the one of [before], carried over to the new song's name. */
+    fun isCarriedOver(np: NowPlaying, now: Long): Boolean =
+        abs(np.positionMs + ((now - np.updateRealtime) * np.speed).toLong() - songMs(now)) < MIX_SAME_MS
+}
 
 /**
  * A tap on a line of the next song of a mixed run: the player is sent on to that song (number
@@ -228,9 +251,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The run of mixed songs on screen as one list, if the song that is playing is part of one. */
     private val mixSession = MutableStateFlow<MixSession?>(null)
+    private val mixWatch = MutableStateFlow<MixWatch?>(null)
     private var pendingSeek: PendingSeek? = null
     private var seekJob: Job? = null
     private var mixCheck: Job? = null
+    /** The song whose last moments the screen spent on the next one, until the player has moved on from it. */
+    private var prerolledFrom: String? = null
     /** The [MixTransition.pair] the player turned out not to mix, so it isn't joined again while its songs play. */
     private var notMixed: String? = null
     private val mix: MixStore = graph.mix
@@ -302,10 +328,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * the key of the lyrics the run began with, so the screen keeps the list where it is while
      * songs are joined on and while the player moves from one to the next.
      */
-    val lyrics: StateFlow<LyricsState> = combine(ownLyrics, mixSession, track, _mode) { own, run, t, mode ->
-        if (run != null && t != null && mode == Mode.NOW_PLAYING && run.indexOf(t.spotifyId, t.title) >= 0) {
-            LyricsState.Loaded(run.lyrics, final = true, key = run.anchor)
-        } else own
+    val lyrics: StateFlow<LyricsState> = combine(ownLyrics, mixSession, mixWatch, track, _mode) { own, run, watch, t, mode ->
+        when {
+            t == null || mode != Mode.NOW_PLAYING -> own
+            // A song that may be mixed in keeps the list it arrived under until that is settled.
+            watch != null && t.key == watch.toKey -> LyricsState.Loaded(watch.run.lyrics, final = true, key = watch.run.anchor)
+            run != null && run.indexOf(t.spotifyId, t.title) >= 0 -> LyricsState.Loaded(run.lyrics, final = true, key = run.anchor)
+            else -> own
+        }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, LyricsState.Idle)
 
     private val _upNext = MutableStateFlow<UpNext?>(null)
@@ -423,7 +453,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     } else if (preroll.value == null) {
                         if (np.isPlaying && left <= PREROLL_MS && wordsAreOver()) {
-                            preroll.value = prerollFrom(np)
+                            preroll.value = prerollFrom(np)?.also { prerolledFrom = np.trackKey }
                             since = SystemClock.elapsedRealtime()
                         }
                         delay((left - PREROLL_MS).coerceIn(50, 1_000))
@@ -435,6 +465,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     ) {
                         // The song was wound back, or something else than the queued song followed.
                         preroll.value = null
+                        prerolledFrom = null
                         return@collectLatest
                     } else {
                         delay(250)
@@ -445,21 +476,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // A run of mixed songs is put together as its parts arrive: the song's own lyrics, what is
         // queued next and its lyrics, and the playlist's transitions.
         viewModelScope.launch {
-            combine(
-                nowPlaying.map { it?.trackKey }.distinctUntilChanged(),
-                ownLyrics,
-                _upNext,
-                mix.status,
-                settings.state.map { it.mixTransitions }.distinctUntilChanged(),
-            ) { _, _, _, _, _ -> }.collect { updateMixSession() }
+            combine(ownLyrics, _upNext, mix.status, settings.state.map { it.mixTransitions }.distinctUntilChanged()) { _, _, _, _ -> }
+                .collect { updateMixSession() }
         }
         // Whether the player really mixes two songs only shows when it moves from one to the other.
+        // That is looked at first, while the run is still as it was for the song before.
         viewModelScope.launch {
             var last: NowPlaying? = null
+            var key: String? = null
             nowPlaying.collect { np ->
                 val before = last
-                last = np ?: return@collect
-                if (before != null && before.trackKey != np.trackKey) songChanged(before, np)
+                if (np != null) last = np
+                if (np?.trackKey == key) return@collect
+                key = np?.trackKey
+                if (np != null && before != null && before.trackKey != np.trackKey) songChanged(before, np)
+                updateMixSession()
             }
         }
         // Following mixed playlists needs their transitions. Spotify's player says which playlist
@@ -566,10 +597,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun songChanged(before: NowPlaying, np: NowPlaying) {
         mixCheck?.cancel()
-        val run = mixSession.value ?: return
+        mixWatch.value = null
+        val prerolled = prerolledFrom == before.trackKey
+        prerolledFrom = null
+        val run = mixSession.value
+        val to = run?.indexOf(np.spotifyTrackId, np.title) ?: -1
+        if (run == null || to < 0) {
+            // Not a song the list has. It starts over from it, unless the player is mixing into it.
+            if (!prerolled) watchForMix(before, np, run)
+            return
+        }
         val from = run.indexOf(before.spotifyTrackId, before.title)
-        val to = run.indexOf(np.spotifyTrackId, np.title)
-        if (to < 0) return // not a song of the run: updateMixSession starts over from it
         if (pendingSeek?.index == to) return // sent there by a tap, which sets the position itself
         val into = run.songs[to].into
         if (from < 0 || to != from + 1 || into == null) {
@@ -591,6 +629,65 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val reported = later.livePosition(t)
             Log.d(MIX_TAG, "player moved on: next song expected at $expected, reported $reported")
             if (later.isPlaying && abs(reported - expected) > MIX_TRUST_MS) endMixSession("the player didn't mix", unmixed = into)
+        }
+    }
+
+    /**
+     * The player went from [before] to a song the list on screen ([shown], if it is a run) doesn't
+     * have. Spotify also mixes songs on the spot, with no transition to read beforehand, and then
+     * the only sign is how the change of song looks: see [looksMixed]. The list holds still until
+     * the new song has said where it is. Then it either goes on into that song's lines, from where
+     * the two songs are, or makes way for them as for any other song.
+     */
+    private fun watchForMix(before: NowPlaying, np: NowPlaying, shown: MixSession?) {
+        if (!settings.state.value.mixTransitions || _mode.value != Mode.NOW_PLAYING) return
+        val beforeId = before.spotifyTrackId ?: return
+        val id = np.spotifyTrackId ?: return
+        val since = SystemClock.elapsedRealtime()
+        fun no(why: String) {
+            Log.d(MIX_TAG, "song changed at ${before.livePosition(since)} of ${before.durationMs}, list starts over: $why")
+        }
+        // A player that stops to load the new song was sent there by hand.
+        if (!before.isPlaying || !np.isPlaying) return no("not playing through")
+        val run = (
+            if (shown != null) {
+                shown.takeIf { it.indexOf(beforeId, before.title) == it.songs.lastIndex }
+            } else {
+                repo.peek(TrackQuery(before.title, before.artist, spotifyTrackId = beforeId))?.let { MixSession.start(beforeId, before.title, it) }
+            }
+        ) ?: return no("nothing to go on from")
+        val words = repo.peek(TrackQuery(np.title, np.artist, spotifyTrackId = id)) ?: return no("the new song's lyrics aren't in yet")
+        val watch = MixWatch(run, before, np.trackKey)
+        if (watch.songMs(since) < MIX_EARLIEST_MS) return no("too early in the song")
+        mixWatch.value = watch
+        mixCheck = viewModelScope.launch {
+            try {
+                // The new song's name tends to arrive before its position does.
+                val later = withTimeoutOrNull(MIX_REPORT_WAIT_MS) {
+                    nowPlaying.first {
+                        it == null || it.trackKey != np.trackKey || !it.isPlaying ||
+                            (it.positionFresh && !watch.isCarriedOver(it, SystemClock.elapsedRealtime()))
+                    }
+                }?.takeIf { it.trackKey == np.trackKey && it.isPlaying }
+                val now = SystemClock.elapsedRealtime()
+                val newAt = later?.livePosition(now)
+                // Both as they were when the song changed.
+                val newAtChange = newAt?.let { it - (now - since) }
+                val left = before.durationMs.takeIf { it > 0 }?.let { it - watch.songMs(since) }
+                val joined = if (newAt != null && newAtChange != null && looksMixed(newAtChange, left)) {
+                    run.addHeard(id, np.title, words, watch.songMs(now), newAt)
+                } else null
+                Log.d(
+                    MIX_TAG,
+                    "song changed at ${watch.songMs(since)} of ${before.durationMs}, new song " +
+                        (if (newAtChange == null) "gave no position" else "at $newAtChange") +
+                        if (joined != null) ": mixed, ${joined.songs.size} songs in the run" else ": list starts over",
+                )
+                if (joined != null) mixSession.value = joined
+            } finally {
+                if (mixWatch.value === watch) mixWatch.value = null
+            }
+            updateMixSession()
         }
     }
 
@@ -687,10 +784,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val run = mixSession.value
                 val at = if (np != null && run != null) run.indexOf(np.spotifyTrackId, np.title) else -1
                 val seek = pendingSeek
+                val watch = mixWatch.value
                 when {
                     np == null -> 0
                     // Ahead of the next song the clock counts down to its start.
                     preroll.value?.fromKey == np.trackKey -> np.livePosition(now) - np.durationMs
+                    // A song that may be mixed in hasn't said where it is yet, so the list keeps its time.
+                    watch != null && watch.toKey == np.trackKey -> watch.listMs(now)
                     // A tapped line of the next song holds until the player has got there.
                     seek != null && run != null -> seek.listMs
                     // A run of mixed songs is one list on the first song's clock.
@@ -728,7 +828,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         // Ahead of a song the lines on screen belong to one that hasn't started yet.
-        if (preroll.value != null) return
+        if (preroll.value != null || mixWatch.value != null) return
         val np = nowPlaying.value ?: return
         val run = mixSession.value
         val at = run?.indexOf(np.spotifyTrackId, np.title) ?: -1

@@ -58,7 +58,22 @@ class MixSession private constructor(
         return MixSession(anchor, songs + Song(spotifyId, TextMatch.normalize(title), shift, transition), joined)
     }
 
+    /**
+     * The run with the song [spotifyId] joined on where the player was heard to bring it in, for a
+     * mix nothing was known about beforehand. The last song was at [atLastMs] of its own time when
+     * the new one was at [atNewMs] of its own. The new song's lines follow from where it is, and
+     * the last song's lines that hadn't begun yet are left out, since it is on its way out.
+     */
+    fun addHeard(spotifyId: String, title: String, lyrics: Lyrics, atLastMs: Long, atNewMs: Long): MixSession? =
+        add(spotifyId, title, lyrics, MixTransition(songs.last().spotifyId, spotifyId, atLastMs, atNewMs, HEARD_OVERLAP_MS, 1f, false))
+
     companion object {
+        /**
+         * How long the overlap of a mix that was only heard counts as lasting from the change of
+         * song. Its real length isn't known; this one keeps the lines that had begun and no others.
+         */
+        private const val HEARD_OVERLAP_MS = 1_000L
+
         /** A run that so far is only the song [spotifyId], with its [lyrics]. Null when they have no timing. */
         fun start(spotifyId: String, title: String, lyrics: Lyrics): MixSession? {
             if (lyrics.sync == SyncType.NONE) return null
@@ -68,3 +83,20 @@ class MixSession private constructor(
         }
     }
 }
+
+/** A new song that is already this far in when the player announces it was playing under the old one. */
+private const val HEARD_UNDER_MS = 250L
+/** A song that is left with at least this much to go didn't simply end. */
+private const val CUT_SHORT_MS = 1_000L
+/** Mixes come towards the end of a song. A song left with more than this to go was skipped. */
+private const val MIX_TAIL_MS = 60_000L
+
+/**
+ * Whether a change of song looks like the player mixing one song into the next, for a mix nothing
+ * was known about beforehand. It shows in one of two ways: the new song was already [newAtMs] in
+ * when it was announced, having come in under the old one, or the old one was left with
+ * [oldLeftMs] still to go near its end (null when its length isn't known). A song skipped by hand
+ * starts the next from its top, mostly far from the end, and a song that ends has nothing left.
+ */
+fun looksMixed(newAtMs: Long, oldLeftMs: Long?): Boolean =
+    newAtMs >= HEARD_UNDER_MS || (oldLeftMs != null && oldLeftMs in CUT_SHORT_MS..MIX_TAIL_MS)
