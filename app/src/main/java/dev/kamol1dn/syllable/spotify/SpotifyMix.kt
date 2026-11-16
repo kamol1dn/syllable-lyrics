@@ -20,8 +20,8 @@ data class MixTransition(
     val speedB: Float,
     val beatmatched: Boolean,
 ) {
-    /** Where the second song is when the first is at [positionA]. */
-    fun positionB(positionA: Long): Long = startBMs + ((positionA - startAMs) * speedB).toLong()
+    /** Names the two songs, to tell one transition from another. */
+    val pair: String get() = "$trackAId>$trackBId"
 }
 
 /**

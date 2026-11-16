@@ -4,9 +4,9 @@ import dev.kamol1dn.syllable.lyrics.LyricLine
 import dev.kamol1dn.syllable.lyrics.LyricWord
 import dev.kamol1dn.syllable.lyrics.Lyrics
 import dev.kamol1dn.syllable.lyrics.SyncType
-import dev.kamol1dn.syllable.lyrics.mixedLyrics
+import dev.kamol1dn.syllable.spotify.MixTransition
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -17,69 +17,93 @@ class MixedLyricsTest {
         return LyricLine(start, end, words.mapIndexed { i, w -> LyricWord("$w ", start + i * step, start + (i + 1) * step) })
     }
 
-    // The outgoing song is mixed out from 200 s, over the incoming song from its 10 s mark, for 5 s.
-    private val outgoing = Lyrics(
+    private val a = Lyrics(
         listOf(
-            line(190_000, 194_000, "long", "gone"),
-            line(198_000, 202_000, "still", "sung", "at", "start"),
-            line(203_000, 204_000, "inside"),
+            line(190_000, 194_000, "long", "before"),
+            line(198_000, 202_000, "sung", "into", "the", "mix"),
             line(203_500, 208_500, "runs", "past", "the", "end"),
             line(204_500, 206_000, "too", "late"),
             line(210_000, 212_000, "never", "heard"),
         ),
-        SyncType.WORD, "test",
+        SyncType.WORD, "first",
     )
-    private val incoming = Lyrics(
-        listOf(line(5_000, 8_000, "before"), line(11_000, 13_000, "during"), line(20_000, 22_000, "after")),
-        SyncType.WORD, "test",
+    private val b = Lyrics(
+        listOf(line(5_000, 8_000, "skipped"), line(11_000, 13_000, "comes", "in"), line(150_000, 152_000, "later", "on")),
+        SyncType.WORD, "second",
     )
+    private val c = Lyrics(listOf(line(1_000, 3_000, "third", "song")), SyncType.WORD, "third")
+
+    // The first song is mixed out from 200 s, over the second from its 10 s mark, for 5 s.
+    private val ab = MixTransition("A", "B", 200_000, 10_000, 5_000, 1f, false)
+    // The second runs into the third from 160 s, which starts at its top, for 4 s.
+    private val bc = MixTransition("B", "C", 160_000, 0, 4_000, 1f, false)
+
+    private val run = MixSession.start("A", "First", a)!!.add("B", "Second", b, ab)!!
 
     @Test
-    fun putsTheOutgoingLinesOnTheIncomingClock() {
-        val mixed = mixedLyrics(outgoing, incoming, 200_000, 10_000, 5_000, 1f)
-        assertEquals(SyncType.WORD, mixed.sync)
+    fun theNextSongsLinesFollowOnTheFirstSongsClock() {
         assertEquals(
-            listOf("before", "still sung at start", "during", "inside", "runs past the end", "after"),
-            mixed.lines.map { it.text },
+            listOf("long before", "sung into the mix", "comes in", "runs past the end", "later on"),
+            run.lyrics.lines.map { it.text },
         )
-        val still = mixed.lines[1]
-        assertTrue(still.outgoing && still.oppositeAligned)
-        assertEquals(8_000L, still.startMs)
-        assertEquals(12_000L, still.endMs)
-        assertFalse(mixed.lines[2].outgoing)
-        assertEquals(13_000L, mixed.lines[3].startMs)
+        assertEquals(listOf(0, 0, 1, 0, 1), run.lyrics.lines.map { it.part })
+        // 11 s of the second song is 1 s into the overlap, which starts at 200 s of the first.
+        val comesIn = run.lyrics.lines[2]
+        assertEquals(201_000L, comesIn.startMs)
+        assertEquals(201_000L, comesIn.words.first().startMs)
+        assertEquals(190_000L, run.songs[1].shiftMs)
     }
 
     @Test
-    fun keepsALineWholeThatOutlastsItsSong() {
-        val mixed = mixedLyrics(outgoing, incoming, 200_000, 10_000, 5_000, 1f)
-        val last = mixed.lines.first { it.text.startsWith("runs") }
-        assertEquals(4, last.words.size)
-        assertEquals(18_500L, last.endMs)
-        // A line that would only begin in the overlap's last second is left out.
-        assertTrue(mixed.lines.none { it.text.startsWith("too") })
+    fun whatIsNeverPlayedIsLeftOut() {
+        val texts = run.lyrics.lines.map { it.text }
+        // Before the second song comes in, and after the first has faded out.
+        assertTrue("skipped" !in texts && "never heard" !in texts)
+        // A line that would only begin in the overlap's last second is too faint to show.
+        assertTrue("too late" !in texts)
+        // One that has begun is kept whole.
+        assertEquals(4, run.lyrics.lines.first { it.text.startsWith("runs") }.words.size)
     }
 
     @Test
-    fun followsTheIncomingSongsTempo() {
-        val mixed = mixedLyrics(outgoing, incoming, 200_000, 10_000, 5_000, 1.1f)
-        assertEquals(13_300L, mixed.lines.first { it.text == "inside" }.startMs)
+    fun theRunKeepsGrowingFromItsEnd() {
+        val longer = run.add("C", "Third", c, bc)!!
+        assertEquals(run.lyrics.lines, longer.lyrics.lines.dropLast(1))
+        val third = longer.lyrics.lines.last()
+        assertEquals(2, third.part)
+        // 160 s of the second song is 350 s on the list's clock, where the third starts from its top.
+        assertEquals(350_000L, longer.songs[2].shiftMs)
+        assertEquals(351_000L, third.startMs)
+        assertSame(run.anchor, longer.anchor)
+        assertEquals("third", longer.lyrics.source)
     }
 
     @Test
-    fun marksLineTimedLinesAmongWordTimedOnes() {
-        val byLine = Lyrics(outgoing.lines.map { LyricLine(it.startMs, it.endMs, listOf(LyricWord(it.text, it.startMs, it.endMs))) }, SyncType.LINE, "test")
-        val mixed = mixedLyrics(byLine, incoming, 200_000, 10_000, 5_000, 1f)
+    fun findsASongByIdOrTitle() {
+        assertEquals(1, run.indexOf("B", "anything"))
+        assertEquals(0, run.indexOf(null, "FIRST!"))
+        assertEquals(1, run.indexOf("relinked", "Second"))
+        assertEquals(-1, run.indexOf("X", "Other"))
+    }
+
+    @Test
+    fun lineTimedSongsLightUpAsWholeLinesAmongWordTimedOnes() {
+        val byLine = Lyrics(b.lines.map { LyricLine(it.startMs, it.endMs, listOf(LyricWord(it.text, it.startMs, it.endMs))) }, SyncType.LINE, "second")
+        val mixed = MixSession.start("A", "First", a)!!.add("B", "Second", byLine, ab)!!.lyrics
         assertEquals(SyncType.WORD, mixed.sync)
-        assertTrue(mixed.lines.filter { it.outgoing }.all { it.lineTimed })
-        assertTrue(mixed.lines.filterNot { it.outgoing }.none { it.lineTimed })
+        assertTrue(mixed.lines.filter { it.part == 1 }.all { it.lineTimed })
+        assertTrue(mixed.lines.filter { it.part == 0 }.none { it.lineTimed })
     }
 
     @Test
-    fun leavesTheSongAloneWhenThereIsNothingToLineUp() {
-        assertSame(incoming, mixedLyrics(null, incoming, 200_000, 10_000, 5_000, 1f))
-        assertSame(incoming, mixedLyrics(outgoing.copy(sync = SyncType.NONE), incoming, 200_000, 10_000, 5_000, 1f))
-        // No outgoing line reaches the overlap.
-        assertSame(incoming, mixedLyrics(outgoing, incoming, 230_000, 10_000, 5_000, 1f))
+    fun needsTimingOnBothSides() {
+        assertNull(MixSession.start("A", "First", a.copy(sync = SyncType.NONE)))
+        assertNull(MixSession.start("A", "First", a)!!.add("B", "Second", b.copy(sync = SyncType.NONE), ab))
+    }
+
+    @Test
+    fun aSongThatEndedARunStartsTheNextAsItsFirstPart() {
+        val again = MixSession.start("B", "Second", Lyrics(run.lyrics.lines.filter { it.part == 1 }, SyncType.WORD, "second"))!!
+        assertTrue(again.lyrics.lines.all { it.part == 0 })
     }
 }

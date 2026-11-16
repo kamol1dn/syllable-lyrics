@@ -269,8 +269,8 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit, onSpotifyLogin: () -> 
                         }
                         Toggle(
                             "Follow mixed playlists", s.mixTransitions,
-                            subtitle = "Experimental. While Spotify mixes one song into the next, both songs' lyrics are " +
-                                "shown together. Reads the transitions of the playlist you are playing.",
+                            subtitle = "Experimental. In a mixed playlist the lyrics run on from one song into the next as " +
+                                "one list. Reads the transitions of the playlist you are playing.",
                         ) { v -> vm.settings.update { it.copy(mixTransitions = v) } }
                         if (s.mixTransitions) {
                             val mix by vm.mixStatus.collectAsStateWithLifecycle()

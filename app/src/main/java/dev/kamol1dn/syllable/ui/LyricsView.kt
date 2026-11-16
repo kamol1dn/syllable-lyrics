@@ -175,7 +175,7 @@ private class Clock(val pos: State<Long>, val frame: State<Long>)
 fun LyricsView(
     lyrics: Lyrics,
     position: () -> Long,
-    onSeek: ((Long) -> Unit)?,
+    onSeek: ((LyricLine) -> Unit)?,
     textScale: Float,
     blurInactive: Boolean,
     modifier: Modifier = Modifier,
@@ -334,8 +334,7 @@ fun LyricsView(
                             textScale = textScale,
                             blur = blurInactive && synced && !userBrowsing,
                             horizontalPadding = horizontalPadding,
-                            // An outgoing line's time is on the next song's clock, where there is nothing of it to seek to.
-                            onClick = if (synced && onSeek != null && !row.line.outgoing) ({ onSeek(row.line.startMs) }) else null,
+                            onClick = if (synced && onSeek != null) ({ onSeek(row.line) }) else null,
                         )
                     }
                 }
@@ -350,9 +349,6 @@ private val SineInOut = CubicBezierEasing(0.37f, 0f, 0.63f, 1f)
 /** How long a line keeps animating after it ends, so its last word can settle. */
 private const val SETTLE_MS = 900L
 
-/** How the lines of a song that is being mixed out are set apart from the song coming in. */
-private const val OUTGOING_ALPHA = 0.72f
-private const val OUTGOING_SCALE = 0.8f
 
 @Composable
 private fun LineView(
@@ -379,13 +375,11 @@ private fun LineView(
     }
     val animated = isActive || (settling && isPast)
 
-    // The song being mixed out sings on in a smaller, quieter voice beside the one coming in.
-    val voice = if (line.outgoing) OUTGOING_ALPHA else 1f
     val lineAlpha = animateFloatAsState(
         when {
-            !synced || isActive -> voice
-            isPast -> LINE_SUNG * voice
-            else -> LINE_NOT_SUNG * voice
+            !synced || isActive -> 1f
+            isPast -> LINE_SUNG
+            else -> LINE_NOT_SUNG
         },
         tween(200, easing = LineFade),
         label = "lineAlpha",
@@ -395,8 +389,7 @@ private fun LineView(
     val density = LocalDensity.current
 
     val end = line.oppositeAligned
-    val style = lyricsTextStyle(if (line.outgoing) textScale * OUTGOING_SCALE else textScale)
-        .copy(textAlign = if (end) TextAlign.End else TextAlign.Start)
+    val style = lyricsTextStyle(textScale).copy(textAlign = if (end) TextAlign.End else TextAlign.Start)
     val lineSync = if (line.lineTimed && sync == SyncType.WORD) SyncType.LINE else sync
     val bgStyle = style.copy(
         fontSize = style.fontSize * 0.7f,

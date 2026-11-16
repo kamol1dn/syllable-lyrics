@@ -379,7 +379,7 @@ private fun LyricsArea(
     Box(modifier) {
         AnimatedContent(
             targetState = lyricsState,
-            contentKey = { if (it is LyricsState.Loaded) it.lyrics else it::class },
+            contentKey = { if (it is LyricsState.Loaded) it.key else it::class },
             transitionSpec = {
                 if (initialState is LyricsState.Loaded) {
                     // A song's lyrics give way to the next song: the old ones leave upwards and

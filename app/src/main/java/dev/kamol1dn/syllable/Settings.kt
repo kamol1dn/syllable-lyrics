@@ -32,8 +32,9 @@ data class SettingsState(
     /** While a mic-identified song is on screen, listen again now and then to stay in sync and catch the next song. */
     val autoListen: Boolean = true,
     /**
-     * Experimental: follow the transitions of mixed Spotify playlists, showing both songs' lyrics
-     * while one runs into the next. Off unless asked for, since it reads the account's playlists.
+     * Experimental: follow the transitions of mixed Spotify playlists, with the lyrics running on
+     * from one song into the next as one list. Off unless asked for, since it reads the playlist
+     * that is playing from the account.
      */
     val mixTransitions: Boolean = false,
 ) {

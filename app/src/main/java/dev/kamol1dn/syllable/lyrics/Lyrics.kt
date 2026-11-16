@@ -33,8 +33,8 @@ data class LyricLine(
     val background: List<LyricWord> = emptyList(),
     /** Sung by a second singer, so drawn on the right. */
     val oppositeAligned: Boolean = false,
-    /** A line of the song that is being mixed out while the next one has started. See [mixedLyrics]. */
-    val outgoing: Boolean = false,
+    /** Which song the line belongs to, when the lines of several mixed songs are joined into one list. See [joinMixed]. */
+    val part: Int = 0,
     /** Has line timing only, among lines that are timed by the word. Lit as a whole, like [SyncType.LINE]. */
     val lineTimed: Boolean = false,
 ) {

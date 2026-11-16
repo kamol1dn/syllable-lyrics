@@ -30,7 +30,7 @@ import coil3.request.allowHardware
 import coil3.toBitmap
 import dev.kamol1dn.syllable.spotify.SpotifyAuth
 import android.util.Log
-import dev.kamol1dn.syllable.lyrics.mixedLyrics
+import dev.kamol1dn.syllable.lyrics.LyricLine
 import dev.kamol1dn.syllable.spotify.MixStore
 import dev.kamol1dn.syllable.spotify.MixTransition
 import dev.kamol1dn.syllable.spotify.SpotifyCover
@@ -43,6 +43,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.transformLatest
@@ -59,6 +60,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
 
 enum class Mode { NOW_PLAYING, RECOGNIZED }
@@ -98,63 +100,24 @@ data class UpNext(
  */
 private class Preroll(val fromKey: String, val next: TrackInfo)
 
-/**
- * A mixed playlist running the song [fromKey] into the next one. From a moment before the overlap
- * the screen shows the next song with [lyrics], which has the outgoing song's last lines among its
- * own, and both follow one clock: the next song's.
- *
- * Players report a change of song in the middle of all this, each in its own way and not always
- * with a position that can be believed. So the clock runs on by itself from where the mix says the
- * next song must be, and takes the player's word again whenever the two agree.
- */
-private class MixHandoff(
-    val fromKey: String,
-    val transition: MixTransition,
-    private val nextTitle: String,
-    val lyrics: Lyrics,
-    private var anchorB: Long,
-    private var anchorAt: Long,
-) {
-    /** Whether [track] is the song being mixed in. */
-    fun isFor(spotifyId: String?, title: String) =
-        spotifyId == transition.trackBId || TextMatch.normalize(title) == nextTitle
-
-    /** What the player's own report says about where the next song is. */
-    fun reported(np: NowPlaying, now: Long): Long =
-        if (np.trackKey == fromKey) transition.positionB(np.livePosition(now)) else np.livePosition(now)
-
-    /** Where the next song is now. */
-    fun position(np: NowPlaying, now: Long): Long {
-        val said = reported(np, now)
-        if (!np.isPlaying) {
-            if (abs(said - anchorB) <= MIX_TRUST_MS) anchorB = said
-            anchorAt = now
-            return anchorB
-        }
-        val expected = anchorB + ((now - anchorAt) * transition.speedB).toLong()
-        if (abs(said - expected) > MIX_TRUST_MS) return expected
-        anchorB = said
-        anchorAt = now
-        return said
-    }
-
-    /** The next song's position at which the outgoing one has faded out. */
-    val overlapEndB: Long get() = transition.positionB(transition.startAMs + transition.durationMs)
-}
-
 private const val MIX_TAG = "SyllableMix"
 /** Stands for "mixed playlists aren't followed" where a playlist id is expected. No id looks like it. */
 private const val MIX_OFF = "off"
-/** The screen moves on this long before the overlap, which is about what the slide takes. */
-private const val MIX_LEAD_MS = 700L
-/** A reported position this close to the expected one is believed. */
-private const val MIX_TRUST_MS = 1_500L
+/** A reported position this close to where the mix says the next song should be is believed. */
+private const val MIX_TRUST_MS = 3_000L
+/** How long the player gets after a change of song to report a position that fits the mix. */
+private const val MIX_GRACE_MS = 1_500L
 /** If the outgoing song still plays on its own this long after the overlap, it isn't being mixed. */
-private const val MIX_LATE_MS = 4_000L
-/** After the overlap the player's own clock takes over again, once it has had time to settle. */
-private const val MIX_SETTLE_MS = 8_000L
-/** A player that reports another position for this long after moving on is believed over the mix. */
-private const val MIX_DISAGREE_MS = 4_500L
+private const val MIX_LATE_MS = 2_500L
+/** How long a tap on a line of the next song waits for the player to get there. */
+private const val MIX_SEEK_WAIT_MS = 5_000L
+
+/**
+ * A tap on a line of the next song of a mixed run: the player is sent on to that song (number
+ * [index] of the run) and then to [targetMs] in it. Until it is there the lyrics hold at [listMs],
+ * the tapped line, instead of following the player through the jump.
+ */
+private class PendingSeek(val index: Int, val targetMs: Long, val listMs: Long)
 
 /** How long before a song's end the screen moves on to the next one. */
 private const val PREROLL_MS = 1_500L
@@ -181,7 +144,11 @@ data class TrackInfo(
 sealed interface LyricsState {
     data object Idle : LyricsState
     data object Loading : LyricsState
-    data class Loaded(val lyrics: Lyrics, val final: Boolean) : LyricsState
+    /**
+     * [key] says whether the screen should treat these as the lyrics it already shows. It only
+     * differs from [lyrics] for a run of mixed songs, whose list grows while it stays the same list.
+     */
+    data class Loaded(val lyrics: Lyrics, val final: Boolean, val key: Any = lyrics) : LyricsState
     data object NotFound : LyricsState
     /** Every source failed with a network error. Retried by itself when the connection comes back. */
     data object Offline : LyricsState
@@ -259,9 +226,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val earlyArt = MutableStateFlow<EarlyArt?>(null)
     private val preroll = MutableStateFlow<Preroll?>(null)
 
-    /** The mix in progress, if any. Set before [preroll], so the lyrics are there when the screen moves on. */
-    private var mixHandoff: MixHandoff? = null
-    private var mixJob: Job? = null
+    /** The run of mixed songs on screen as one list, if the song that is playing is part of one. */
+    private val mixSession = MutableStateFlow<MixSession?>(null)
+    private var pendingSeek: PendingSeek? = null
+    private var seekJob: Job? = null
+    private var mixCheck: Job? = null
+    /** The [MixTransition.pair] the player turned out not to mix, so it isn't joined again while its songs play. */
+    private var notMixed: String? = null
     private val mix: MixStore = graph.mix
     val mixStatus: StateFlow<MixStore.Status> = mix.status
 
@@ -295,7 +266,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
-    val lyrics: StateFlow<LyricsState> = combine(
+    /** The lyrics of the song on screen by itself. */
+    private val ownLyrics: StateFlow<LyricsState> = combine(
         track.map { t -> t?.let { Triple(it.key, it, Unit) } }.distinctUntilChanged { a, b -> a?.first == b?.first },
         retry,
     ) { t, r -> t?.second to r }
@@ -311,8 +283,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val kept = lastLoaded?.takeIf { isRetry && it.first == t.key }?.second
             val query = TrackQuery(t.title, t.artist, t.album, t.durationMs, t.spotifyId)
             // Lyrics fetched ahead of time go straight on screen, without the searching state in between.
-            // A song being mixed in comes with the outgoing song's last lines among its own.
-            val ready = if (isRetry) null else mixHandoff?.takeIf { it.isFor(t.spotifyId, t.title) }?.lyrics ?: repo.peek(query)
+            val ready = if (isRetry) null else repo.peek(query)
             if (ready != null) {
                 return@flatMapLatest flowOf(LyricsState.Loaded(ready, final = true).also { lastLoaded = t.key to it })
             }
@@ -326,10 +297,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, LyricsState.Idle)
 
+    /**
+     * The lyrics on screen. A song from a run of mixed songs shows the whole run as one list, under
+     * the key of the lyrics the run began with, so the screen keeps the list where it is while
+     * songs are joined on and while the player moves from one to the next.
+     */
+    val lyrics: StateFlow<LyricsState> = combine(ownLyrics, mixSession, track, _mode) { own, run, t, mode ->
+        if (run != null && t != null && mode == Mode.NOW_PLAYING && run.indexOf(t.spotifyId, t.title) >= 0) {
+            LyricsState.Loaded(run.lyrics, final = true, key = run.anchor)
+        } else own
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, LyricsState.Idle)
+
     private val _upNext = MutableStateFlow<UpNext?>(null)
-    /** What plays after the song on screen. Null for players that don't share their queue. */
-    val upNext: StateFlow<UpNext?> = combine(_upNext, track, _mode) { next, t, mode ->
-        next?.takeIf { mode == Mode.NOW_PLAYING && t?.key == it.forKey }
+    /**
+     * What plays after the song on screen. Null for players that don't share their queue, and
+     * when the next song's lines already follow in the same list.
+     */
+    val upNext: StateFlow<UpNext?> = combine(_upNext, track, _mode, mixSession) { next, t, mode, run ->
+        val joined = run != null && t != null && run.indexOf(t.spotifyId, t.title).let { it >= 0 && it < run.songs.lastIndex }
+        next?.takeIf { mode == Mode.NOW_PLAYING && t?.key == it.forKey && !joined }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     private val connectivity = app.getSystemService(ConnectivityManager::class.java)
@@ -424,19 +410,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     val np = nowPlaying.value?.takeIf { it.trackKey == key && it.durationMs > 0 } ?: return@collectLatest
                     val pos = np.livePosition()
                     val left = np.durationMs - pos
-                    if (preroll.value == null) {
-                        // A mixed playlist starts the next song over this one, well before its end.
-                        val t = mixFor(np)
-                        val untilMix = if (t != null && pos < t.startAMs + t.durationMs) t.startAMs - MIX_LEAD_MS - pos else null
-                        if (np.isPlaying && untilMix != null && untilMix <= 0) {
-                            if (!startMix(np, t!!)) delay(400)
-                        } else if (np.isPlaying && left <= PREROLL_MS && wordsAreOver()) {
+                    val into = joinedNext(np)
+                    if (into != null) {
+                        // The next song's lines already follow in the same list, so there is
+                        // nothing to move on to. Unless the player doesn't mix after all, and this
+                        // song is still going by itself well after it should have faded out.
+                        val gone = into.startAMs + into.durationMs + MIX_LATE_MS
+                        if (np.isPlaying && pos > gone && left > 500) {
+                            endMixSession("still playing alone at $pos", unmixed = into)
+                        } else {
+                            delay((gone - pos).coerceIn(250, 1_000))
+                        }
+                    } else if (preroll.value == null) {
+                        if (np.isPlaying && left <= PREROLL_MS && wordsAreOver()) {
                             preroll.value = prerollFrom(np)
                             since = SystemClock.elapsedRealtime()
                         }
-                        delay(minOf(left - PREROLL_MS, untilMix ?: Long.MAX_VALUE).coerceIn(50, 1_000))
-                    } else if (mixHandoff != null) {
-                        delay(250) // a mix looks after itself, see startMix
+                        delay((left - PREROLL_MS).coerceIn(50, 1_000))
                     } else if (
                         // A position back near zero is how players announce the next song, so only
                         // one further in counts as winding back.
@@ -450,6 +440,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         delay(250)
                     }
                 }
+            }
+        }
+        // A run of mixed songs is put together as its parts arrive: the song's own lyrics, what is
+        // queued next and its lyrics, and the playlist's transitions.
+        viewModelScope.launch {
+            combine(
+                nowPlaying.map { it?.trackKey }.distinctUntilChanged(),
+                ownLyrics,
+                _upNext,
+                mix.status,
+                settings.state.map { it.mixTransitions }.distinctUntilChanged(),
+            ) { _, _, _, _, _ -> }.collect { updateMixSession() }
+        }
+        // Whether the player really mixes two songs only shows when it moves from one to the other.
+        viewModelScope.launch {
+            var last: NowPlaying? = null
+            nowPlaying.collect { np ->
+                val before = last
+                last = np ?: return@collect
+                if (before != null && before.trackKey != np.trackKey) songChanged(before, np)
             }
         }
         // Following mixed playlists needs their transitions. Spotify's player says which playlist
@@ -489,79 +499,122 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return Preroll(np.trackKey, TrackInfo(key, next.title, next.artist, null, cover, null, null, next.spotifyId))
     }
 
-    /** The saved transition from the song that is playing into the queued one, when mixed playlists are followed. */
-    private fun mixFor(np: NowPlaying): MixTransition? {
-        if (!settings.state.value.mixTransitions) return null
-        val a = np.spotifyTrackId ?: return null
-        val b = _upNext.value?.takeIf { it.forKey == np.trackKey }?.spotifyId ?: return null
-        return mix.find(a, b)
+    /** How the song that is playing runs into the next one, when that one's lines are joined on in the list. */
+    private fun joinedNext(np: NowPlaying): MixTransition? {
+        val run = mixSession.value ?: return null
+        val at = run.indexOf(np.spotifyTrackId, np.title)
+        return if (at >= 0) run.songs.getOrNull(at + 1)?.into else null
     }
 
     /**
-     * Moves the screen on to the song that [t] mixes in. False when that song's lyrics aren't in
-     * yet, in which case nothing has changed.
+     * Brings the run of mixed songs up to date with what is playing and what is queued: starts
+     * one from the song that is playing, and joins the next song on once its transition and its
+     * lyrics are known. Cheap, and safe to call whenever any of that may have changed.
      */
-    private fun startMix(np: NowPlaying, t: MixTransition): Boolean {
-        val next = _upNext.value?.takeIf { it.forKey == np.trackKey } ?: return false
-        val pre = prerollFrom(np) ?: return false
-        val incoming = repo.peek(TrackQuery(next.title, next.artist, spotifyTrackId = next.spotifyId)) ?: return false
-        // The song on screen may itself have been mixed in, with the lines of the one before among its own.
-        val outgoing = (lyrics.value as? LyricsState.Loaded)?.lyrics?.let { l -> l.copy(lines = l.lines.filterNot { it.outgoing }) }
-        val now = SystemClock.elapsedRealtime()
-        val handoff = MixHandoff(
-            np.trackKey, t, TextMatch.normalize(next.title),
-            mixedLyrics(outgoing, incoming, t.startAMs, t.startBMs, t.durationMs, t.speedB),
-            anchorB = t.positionB(np.livePosition(now)), anchorAt = now,
-        )
-        Log.d(MIX_TAG, "mix starts: A at ${np.livePosition(now)}, overlap from ${t.startAMs} for ${t.durationMs}, B from ${t.startBMs}")
-        mixHandoff = handoff
-        preroll.value = pre
-        mixJob?.cancel()
-        mixJob = viewModelScope.launch { watchMix(handoff) }
-        return true
-    }
-
-    /** Ends [handoff] when the mix is over, or calls it off when the player turns out not to be mixing. */
-    private suspend fun watchMix(handoff: MixHandoff) {
-        val t = handoff.transition
-        var movedOn = false
-        var disagreeSince = 0L
-        try {
-            while (true) {
-                delay(200)
-                val np = nowPlaying.value ?: return
-                val now = SystemClock.elapsedRealtime()
-                if (np.trackKey == handoff.fromKey) {
-                    val a = np.livePosition(now)
-                    // Wound back, or still going by itself well after it should have faded out.
-                    val woundBack = a in 3_000 until t.startAMs - 3_000
-                    val notMixing = np.isPlaying && a > t.startAMs + t.durationMs + MIX_LATE_MS && a < np.durationMs - 500
-                    if (woundBack || notMixing) {
-                        Log.d(MIX_TAG, "mix called off: A at $a, ${if (woundBack) "wound back" else "still playing alone"}")
-                        preroll.value = null
-                        return
-                    }
-                } else if (handoff.isFor(np.spotifyTrackId, np.title)) {
-                    if (!movedOn) {
-                        movedOn = true
-                        Log.d(MIX_TAG, "player moved on: B expected at ${handoff.position(np, now)}, reported ${handoff.reported(np, now)}, overlap ends at ${handoff.overlapEndB}")
-                    }
-                    val at = handoff.position(np, now)
-                    if (at > handoff.overlapEndB + MIX_SETTLE_MS) return
-                    // A player that keeps insisting on another position knows better: most likely
-                    // it didn't mix, and started the song from the top.
-                    if (abs(handoff.reported(np, now) - at) <= MIX_TRUST_MS || !np.isPlaying) disagreeSince = 0L
-                    else if (disagreeSince == 0L) disagreeSince = now
-                    else if (now - disagreeSince > MIX_DISAGREE_MS) {
-                        Log.d(MIX_TAG, "player disagrees: reported ${handoff.reported(np, now)}, expected $at")
-                        return
-                    }
-                } else {
-                    return // some other song
+    private fun updateMixSession() {
+        val np = nowPlaying.value
+        val id = np?.spotifyTrackId
+        if (np == null || id == null || !settings.state.value.mixTransitions) {
+            mixSession.value = null
+            return
+        }
+        val next = _upNext.value?.takeIf { it.forKey == np.trackKey }
+        var run = mixSession.value
+        var at = run?.indexOf(id, np.title) ?: -1
+        // The queue was changed, and the song that was joined on won't be the next one after all.
+        if (run != null && at >= 0 && at < run.songs.lastIndex && next?.spotifyId != null &&
+            !run.songs[at + 1].matches(next.spotifyId, next.title)
+        ) at = -1
+        if (run == null || at < 0) {
+            // A new run starts from the song's own lyrics, once they are in.
+            val own = (ownLyrics.value as? LyricsState.Loaded)?.takeIf { it.final && lastLoaded?.first == np.trackKey }?.lyrics
+            run = own?.let { MixSession.start(id, np.title, it) }
+            at = 0
+        }
+        val nextId = next?.spotifyId
+        if (run != null && at == run.songs.lastIndex && nextId != null) {
+            val t = (mix.find(run.songs[at].spotifyId, nextId) ?: mix.find(id, nextId))?.takeIf { it.pair != notMixed }
+            val words = if (t == null) null else repo.peek(TrackQuery(next.title, next.artist, spotifyTrackId = nextId))
+            if (t != null && words != null) {
+                run.add(nextId, next.title, words, t)?.let {
+                    Log.d(MIX_TAG, "joined on: overlap from ${t.startAMs} for ${t.durationMs}, next from ${t.startBMs}, ${it.songs.size} songs in the run")
+                    run = it
                 }
             }
-        } finally {
-            if (mixHandoff === handoff) mixHandoff = null
+        }
+        // A run of one song is just that song.
+        mixSession.value = run?.takeIf { it.songs.size > 1 }
+    }
+
+    /**
+     * Drops the run, so the song on screen is shown by itself again. [unmixed] is the transition
+     * the player turned out not to follow, which then isn't joined again while its songs play.
+     */
+    private fun endMixSession(why: String, unmixed: MixTransition? = null) {
+        if (mixSession.value == null) return
+        Log.d(MIX_TAG, "run ended: $why")
+        if (unmixed != null) notMixed = unmixed.pair
+        mixSession.value = null
+        updateMixSession()
+    }
+
+    /**
+     * The player went from [before] to [np]. If that is the step a mixed run expects, the run
+     * goes on only if the new song is about where the transition says it would be: a song that
+     * was skipped to by hand, or that the player started from the top instead of mixing, is not
+     * the continuation the list shows.
+     */
+    private fun songChanged(before: NowPlaying, np: NowPlaying) {
+        mixCheck?.cancel()
+        val run = mixSession.value ?: return
+        val from = run.indexOf(before.spotifyTrackId, before.title)
+        val to = run.indexOf(np.spotifyTrackId, np.title)
+        if (to < 0) return // not a song of the run: updateMixSession starts over from it
+        if (pendingSeek?.index == to) return // sent there by a tap, which sets the position itself
+        val into = run.songs[to].into
+        if (from < 0 || to != from + 1 || into == null) {
+            endMixSession("moved to another song of the run")
+            return
+        }
+        val now = SystemClock.elapsedRealtime()
+        val left = before.livePosition(now)
+        if (left < into.startAMs - MIX_TRUST_MS) {
+            endMixSession("skipped at $left, before the overlap at ${into.startAMs}")
+            return
+        }
+        // The first report after a change of song isn't always right, so it gets a moment.
+        mixCheck = viewModelScope.launch {
+            delay(MIX_GRACE_MS)
+            val later = nowPlaying.value?.takeIf { it.trackKey == np.trackKey } ?: return@launch
+            val t = SystemClock.elapsedRealtime()
+            val expected = into.startBMs + (left - into.startAMs) + (t - now)
+            val reported = later.livePosition(t)
+            Log.d(MIX_TAG, "player moved on: next song expected at $expected, reported $reported")
+            if (later.isPlaying && abs(reported - expected) > MIX_TRUST_MS) endMixSession("the player didn't mix", unmixed = into)
+        }
+    }
+
+    /**
+     * Plays from a line of the next song of the run: on to that song, then to [targetMs] in it.
+     * The lyrics wait at [listMs], the line, until the player is there.
+     */
+    private fun skipInto(run: MixSession, index: Int, targetMs: Long, listMs: Long) {
+        val seek = PendingSeek(index, targetMs, listMs)
+        pendingSeek = seek
+        seekJob?.cancel()
+        seekJob = viewModelScope.launch {
+            try {
+                withTimeoutOrNull(MIX_SEEK_WAIT_MS) {
+                    media.next()
+                    nowPlaying.first { np -> np != null && run.indexOf(np.spotifyTrackId, np.title) == index }
+                    // A player asked to seek in the instant it changes song tends not to hear it.
+                    delay(250)
+                    media.seekTo(targetMs)
+                    nowPlaying.first { np -> np != null && abs(np.livePosition() - targetMs) < MIX_TRUST_MS }
+                }
+            } finally {
+                if (pendingSeek === seek) pendingSeek = null
+            }
         }
     }
 
@@ -631,14 +684,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             Mode.NOW_PLAYING -> {
                 val np = nowPlaying.value
-                val mixing = mixHandoff
+                val run = mixSession.value
+                val at = if (np != null && run != null) run.indexOf(np.spotifyTrackId, np.title) else -1
+                val seek = pendingSeek
                 when {
                     np == null -> 0
-                    // During a mix the lyrics follow the next song, wherever the player says it is.
-                    mixing != null && (np.trackKey == mixing.fromKey || mixing.isFor(np.spotifyTrackId, np.title)) ->
-                        mixing.position(np, now)
                     // Ahead of the next song the clock counts down to its start.
                     preroll.value?.fromKey == np.trackKey -> np.livePosition(now) - np.durationMs
+                    // A tapped line of the next song holds until the player has got there.
+                    seek != null && run != null -> seek.listMs
+                    // A run of mixed songs is one list on the first song's clock.
+                    run != null && at >= 0 -> np.livePosition(now) + run.songs[at].shiftMs
                     else -> np.livePosition(now)
                 }
             }
@@ -661,17 +717,33 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (_mode.value == Mode.RECOGNIZED) _nudge.value = 0 else settings.forgetTiming(output.value.key)
     }
 
-    fun seekToLyric(ms: Long) {
-        // The lines on screen belong to the song that hasn't started yet.
-        if (_mode.value == Mode.NOW_PLAYING && (preroll.value != null || mixHandoff != null)) return
-        val target = ms - timing.value.offsetMs
-        when (_mode.value) {
-            Mode.NOW_PLAYING -> media.seekTo(target)
-            Mode.RECOGNIZED -> {
-                val r = _recognized.value ?: return
-                _recognized.value = r.copy(positionMs = target, anchorRealtime = SystemClock.elapsedRealtime())
-                if (_clockPaused.value) pausedAtPosition = target
-            }
+    /** Plays from [line], a line of the lyrics on screen. */
+    fun seekToLyric(line: LyricLine) {
+        val offset = timing.value.offsetMs
+        if (_mode.value == Mode.RECOGNIZED) {
+            val r = _recognized.value ?: return
+            val target = line.startMs - offset
+            _recognized.value = r.copy(positionMs = target, anchorRealtime = SystemClock.elapsedRealtime())
+            if (_clockPaused.value) pausedAtPosition = target
+            return
+        }
+        // Ahead of a song the lines on screen belong to one that hasn't started yet.
+        if (preroll.value != null) return
+        val np = nowPlaying.value ?: return
+        val run = mixSession.value
+        val at = run?.indexOf(np.spotifyTrackId, np.title) ?: -1
+        if (run == null || at < 0) {
+            media.seekTo(line.startMs - offset)
+            return
+        }
+        // In a run of mixed songs the line may be the next song's, which is then played from there.
+        val song = run.songs.getOrNull(line.part) ?: return
+        val target = line.startMs - song.shiftMs - offset
+        when (line.part) {
+            at -> media.seekTo(target)
+            at + 1 -> skipInto(run, at + 1, target, line.startMs)
+            // A song that is over. Going back through a mix isn't something the player does.
+            else -> Unit
         }
     }
 
