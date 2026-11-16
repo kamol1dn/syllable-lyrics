@@ -22,6 +22,13 @@ class UpcomingTracksTest {
     }
 
     @Test
+    fun aMarkStillOnTheSongBeforeIsNotBelieved() {
+        // The new song is named a moment before the player moves its mark in the queue.
+        assertEquals(listOf("Love Story", "Bye Bye Bye"), upcomingTracks(queue, 39, "Faded").map { it.title })
+        assertEquals(listOf("Save Your Tears (Remix)"), upcomingTracks(queue, 40, "Natural", limit = 1).map { it.title })
+    }
+
+    @Test
     fun fallsBackToTheTitle() {
         assertEquals(listOf("Love Story", "Bye Bye Bye"), upcomingTracks(queue, -1, "Faded").map { it.title })
     }

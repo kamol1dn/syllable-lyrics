@@ -582,7 +582,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             at = 0
         }
         val last = run
-        if (last != null && at == last.songs.lastIndex && nextId != null) {
+        // Never the song that is playing itself: it could not be told from the one after it, and
+        // just after a change of song the player's queue may still name it as the next one.
+        if (last != null && at == last.songs.lastIndex && nextId != null && !last.songs[at].matches(nextId, next.title)) {
             val words = repo.peek(TrackQuery(next.title, next.artist, spotifyTrackId = nextId))
             if (words != null) {
                 // A transition saved in the playlist says where the next song comes in. Without

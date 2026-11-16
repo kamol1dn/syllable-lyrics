@@ -77,10 +77,16 @@ fun upcomingTracks(queue: List<QueuedTrack>, activeId: Long, title: String, limi
     return if (at < 0) emptyList() else queue.drop(at + 1).take(limit)
 }
 
-/** Where the current song sits in the queue, or -1. */
+/**
+ * Where the current song sits in the queue, or -1. A player names a new song a moment before it
+ * moves its mark in the queue, so a mark on an entry with another title is taken to be on the song
+ * before: the current one is then the next entry with the [title].
+ */
 fun currentIndex(queue: List<QueuedTrack>, activeId: Long, title: String): Int {
-    val at = queue.indexOfFirst { it.queueId == activeId }
-    return if (at >= 0) at else queue.indexOfFirst { it.title == title }
+    val marked = queue.indexOfFirst { it.queueId == activeId }
+    if (marked >= 0 && queue[marked].title == title) return marked
+    val after = (marked + 1 until queue.size).firstOrNull { queue[it].title == title }
+    return after ?: queue.indexOfFirst { it.title == title }.takeIf { it >= 0 } ?: marked
 }
 
 /** Follows the most relevant active media session (any player that posts a media notification). */
