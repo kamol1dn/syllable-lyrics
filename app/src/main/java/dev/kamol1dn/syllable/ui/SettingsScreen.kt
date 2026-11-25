@@ -193,6 +193,17 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit, onSpotifyLogin: () -> 
                         "Spotify Canvas", s.canvas,
                         subtitle = "Plays the song's looping clip behind the lyrics, when it has one. Needs the Spotify sign-in",
                     ) { v -> vm.settings.update { it.copy(canvas = v) } }
+                    // Says why nothing moves, when nothing does.
+                    val canvasStatus by vm.canvasStatus.collectAsStateWithLifecycle()
+                    if (s.canvas) {
+                        Helper(
+                            when {
+                                !spotify.signedIn -> "Not signed in to Spotify, so no Canvas"
+                                else -> canvasStatus ?: "No Spotify song looked up yet"
+                            },
+                            Modifier.padding(bottom = 6.dp),
+                        )
+                    }
                     Toggle(
                         "Carry on from song to song", s.continuousLyrics,
                         subtitle = "With Spotify, the next song's lines follow in the same list, through its mixes too",

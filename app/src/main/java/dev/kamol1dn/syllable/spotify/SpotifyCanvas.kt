@@ -11,6 +11,10 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
@@ -25,17 +29,31 @@ class SpotifyCanvas(context: Context) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, File?>?) = size > 100
     }
 
+    private val _status = MutableStateFlow<String?>(null)
+    /** What the last lookup came to, in words for the settings page. */
+    val status: StateFlow<String?> = _status.asStateFlow()
+
     /** Whether [trackId] has been looked up, so [find] answers without asking anyone. */
     fun isKnown(trackId: String): Boolean = synchronized(known) { trackId in known && known[trackId]?.exists() != false }
 
     /** The Canvas of [trackId] as a downloaded file. Null when the song has none or it couldn't be had. */
     suspend fun find(trackId: String): File? {
-        if (isKnown(trackId)) return synchronized(known) { known[trackId] }
-        val token = SpotifyAuth.getToken() ?: return null
-        val url = catching { canvasUrl(token, trackId) }.onFailure { Log.d(TAG, "canvas lookup failed: $it") }.getOrElse { return null }
-        val file = url?.let { download(it, sha(it.substringBefore('?')) + ".mp4") ?: return null }
+        if (isKnown(trackId)) {
+            return synchronized(known) { known[trackId] }.also { _status.value = if (it != null) PLAYING else NONE }
+        }
+        _status.value = "Asking Spotify…"
+        val token = SpotifyAuth.getToken() ?: return null.also { _status.value = "Couldn't get the Spotify sign-in" }
+        val url = catching { canvasUrl(token, trackId) }.getOrElse {
+            Log.d(TAG, "canvas lookup failed: $it")
+            _status.value = "Spotify didn't give this song's Canvas (${it.message ?: it.javaClass.simpleName})"
+            return null
+        }
+        val file = url?.let {
+            download(it, sha(it.substringBefore('?')) + ".mp4") ?: return null.also { _status.value = "Couldn't download this song's Canvas" }
+        }
         Log.d(TAG, "song $trackId: " + if (file != null) "canvas, ${file.length() / 1024} kB" else "no canvas")
         synchronized(known) { known[trackId] = file }
+        _status.value = if (file != null) PLAYING else NONE
         return file
     }
 
@@ -53,8 +71,11 @@ class SpotifyCanvas(context: Context) {
             .post(body.toRequestBody("application/x-protobuf".toMediaType()))
             .build()
         val bytes = withContext(Dispatchers.IO) {
-            Net.client.newCall(request).execute().use { r -> if (r.isSuccessful) r.body.bytes() else null }
-        } ?: return null
+            Net.client.newCall(request).execute().use { r ->
+                if (!r.isSuccessful) throw IOException("HTTP ${r.code}")
+                r.body.bytes()
+            }
+        }
         return parseCanvas(bytes)
     }
 
@@ -94,6 +115,8 @@ class SpotifyCanvas(context: Context) {
 
     companion object {
         private const val TAG = "SyllableCanvas"
+        private const val PLAYING = "This song's Canvas is playing"
+        private const val NONE = "This song has no Canvas"
         private const val CANVAS_URL = "https://spclient.wg.spotify.com/canvaz-cache/v0/canvases"
         private const val MAX_BYTES = 40L * 1024 * 1024
         private const val MAX_TOTAL_BYTES = 200L * 1024 * 1024

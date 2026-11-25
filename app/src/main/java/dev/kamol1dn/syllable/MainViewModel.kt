@@ -278,6 +278,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var notMixed: String? = null
     private val mix: MixStore = graph.mix
     val mixStatus: StateFlow<MixStore.Status> = mix.status
+    val canvasStatus: StateFlow<String?> = graph.canvas.status
 
     /**
      * Covers fetched ahead for the last few queued songs, by title. The queue moves on a moment
