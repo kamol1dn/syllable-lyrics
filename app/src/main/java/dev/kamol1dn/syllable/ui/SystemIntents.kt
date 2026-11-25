@@ -8,7 +8,8 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings as AndroidSettings
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -66,22 +67,23 @@ fun UpdateDialog(update: AppUpdate, onLater: () -> Unit, onSkip: () -> Unit) {
         containerColor = MaterialTheme.colorScheme.surfaceContainer,
         title = { Text("Syllable ${update.version} is out", color = Color.White) },
         text = {
-            Column(Modifier.heightIn(max = 280.dp).verticalScroll(rememberScrollState())) {
-                Text(
-                    update.notes.ifEmpty { "A newer version than this one (${BuildConfig.VERSION_NAME}) is ready to download." },
-                    color = Color.White.copy(alpha = 0.7f),
-                )
+            Column {
+                Column(Modifier.heightIn(max = 260.dp).verticalScroll(rememberScrollState())) {
+                    Text(
+                        update.notes.ifEmpty { "A newer version than this one (${BuildConfig.VERSION_NAME}) is ready to download." },
+                        color = Color.White.copy(alpha = 0.7f),
+                    )
+                }
+                // Three buttons don't fit the row below, so the least used one sits here.
+                TextButton(onClick = onSkip, contentPadding = PaddingValues(0.dp), modifier = Modifier.padding(top = 4.dp)) {
+                    Text("Skip this version", color = Color.White.copy(alpha = 0.6f))
+                }
             }
         },
         confirmButton = {
             TextButton(onClick = { openUrl(ctx, update.downloadUrl); onLater() }) { Text("Download", color = Accent, fontWeight = FontWeight.Bold) }
         },
-        dismissButton = {
-            Row {
-                TextButton(onClick = onSkip) { Text("Skip this version", color = Color.White.copy(alpha = 0.7f)) }
-                TextButton(onClick = onLater) { Text("Later", color = Color.White) }
-            }
-        },
+        dismissButton = { TextButton(onClick = onLater) { Text("Later", color = Color.White) } },
     )
 }
 

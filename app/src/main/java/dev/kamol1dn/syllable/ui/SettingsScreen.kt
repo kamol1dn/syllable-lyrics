@@ -74,6 +74,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -198,7 +199,7 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit, onSpotifyLogin: () -> 
                     ) { v -> vm.settings.update { it.copy(continuousLyrics = v) } }
                     Toggle(
                         "Also when I skip a song", s.continuousOnSkip && s.continuousLyrics,
-                        subtitle = "Off, a song you skip to starts its lyrics afresh",
+                        subtitle = "The list also runs on into a song you skip to, instead of starting afresh",
                         enabled = s.continuousLyrics,
                     ) { v -> vm.settings.update { it.copy(continuousOnSkip = v) } }
                 }
@@ -376,6 +377,7 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit, onSpotifyLogin: () -> 
                 Card {
                     Text("Syllable ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})", color = Color.White, fontWeight = FontWeight.SemiBold)
                     Helper("Shows the lyrics of what you're playing, word by word.")
+                    Spacer(Modifier.height(8.dp))
                     Toggle(
                         "Check for updates", s.checkUpdates,
                         subtitle = "Asks GitHub for a newer version when Syllable opens",
@@ -525,7 +527,7 @@ private fun Toggle(label: String, checked: Boolean, subtitle: String? = null, en
     ) {
         Column(Modifier.weight(1f)) {
             Text(label, color = Color.White.copy(alpha = if (enabled) 1f else 0.4f))
-            if (subtitle != null) Helper(subtitle)
+            if (subtitle != null) Helper(subtitle, Modifier.alpha(if (enabled) 1f else 0.5f))
         }
         Switch(
             checked = checked, onCheckedChange = null, enabled = enabled,
