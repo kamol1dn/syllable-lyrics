@@ -42,6 +42,7 @@ import dev.kamol1dn.syllable.ui.MainScreen
 import dev.kamol1dn.syllable.ui.SettingsScreen
 import dev.kamol1dn.syllable.spotify.SpotifyLoginActivity
 import dev.kamol1dn.syllable.ui.SyllableTheme
+import dev.kamol1dn.syllable.ui.UpdateDialog
 
 enum class Screen { MAIN, LISTEN, SETTINGS }
 
@@ -97,6 +98,8 @@ class MainActivity : ComponentActivity() {
                     vm.clearRecognized()
                 }
                 val spotifyLogin = { startActivity(Intent(this@MainActivity, SpotifyLoginActivity::class.java)) }
+                val update by vm.update.collectAsStateWithLifecycle()
+                update?.let { UpdateDialog(it, onLater = vm::dismissUpdate, onSkip = vm::skipUpdate) }
                 AnimatedContent(
                     targetState = screen,
                     transitionSpec = { screenTransition(initialState, targetState) },

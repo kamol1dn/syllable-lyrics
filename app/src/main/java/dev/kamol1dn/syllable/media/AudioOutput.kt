@@ -22,6 +22,23 @@ data class AudioOutput(val key: String, val name: String, val kind: OutputKind) 
         /** The player streams to another device (Cast, Spotify Connect), so the phone's audio route doesn't matter. */
         fun remote(packageName: String, appName: String) =
             AudioOutput("remote:$packageName", "Casting from $appName", OutputKind.REMOTE)
+
+        val PhoneMic = AudioOutput("mic", "Phone microphone", OutputKind.PHONE)
+
+        /** The microphone a recording is coming from, [device] being what the recorder is routed to. */
+        fun mic(device: AudioDeviceInfo?): AudioOutput {
+            val product = device?.productName?.toString()?.trim().orEmpty()
+            val address = if (device != null && Build.VERSION.SDK_INT >= 28) device.address.orEmpty() else ""
+            return when (device?.type) {
+                AudioDeviceInfo.TYPE_WIRED_HEADSET, AudioDeviceInfo.TYPE_LINE_ANALOG ->
+                    AudioOutput("mic:wired", "Headset microphone", OutputKind.WIRED)
+                AudioDeviceInfo.TYPE_USB_HEADSET, AudioDeviceInfo.TYPE_USB_DEVICE, AudioDeviceInfo.TYPE_USB_ACCESSORY ->
+                    AudioOutput("mic:usb:$product", product.ifEmpty { "USB" } + " microphone", OutputKind.USB)
+                AudioDeviceInfo.TYPE_BLUETOOTH_SCO, 26 /* TYPE_BLE_HEADSET */ ->
+                    AudioOutput("mic:bt:${address.ifEmpty { product }}", product.ifEmpty { "Bluetooth" } + " microphone", OutputKind.BLUETOOTH)
+                else -> PhoneMic
+            }
+        }
     }
 }
 

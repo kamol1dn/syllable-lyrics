@@ -33,6 +33,7 @@ import android.util.Log
 import dev.kamol1dn.syllable.lyrics.LyricLine
 import dev.kamol1dn.syllable.spotify.MixStore
 import dev.kamol1dn.syllable.spotify.MixTransition
+import java.io.File
 import dev.kamol1dn.syllable.spotify.SpotifyCover
 import dev.kamol1dn.syllable.spotify.SpotifyLyricsProvider
 import kotlinx.coroutines.Dispatchers
@@ -72,7 +73,10 @@ private const val CHECK_MS = 60_000L
 private const val END_LEAD_MS = 6_000L
 private const val AFTER_END_CHECK_MS = 12_000L
 private const val AFTER_END_WINDOW_MS = 10 * 60_000L
-private const val AUTO_RESYNC_MS = 600L
+/** The automatic check takes a song to be somewhere else only when it hears it this far from the lyrics. */
+private const val AUTO_FAR_MS = 5_000L
+/** And only when two checks in a row agree on where, to within this. */
+private const val AUTO_AGREE_MS = 1_500L
 /** The current song's own search goes first; the next song's lyrics can wait this long. */
 private const val LOOK_AHEAD_DELAY_MS = 1_500L
 private const val UP_NEXT_PREVIEW_LINES = 6
@@ -100,6 +104,9 @@ data class UpNext(
  */
 private class Preroll(val fromKey: String, val next: TrackInfo)
 
+/** A song has to stay this long before its Canvas is looked for. */
+private const val CANVAS_DELAY_MS = 1_200L
+
 private const val MIX_TAG = "SyllableMix"
 /** Stands for "mixed playlists aren't followed" where a playlist id is expected. No id looks like it. */
 private const val MIX_OFF = "off"
@@ -113,20 +120,28 @@ private const val MIX_LATE_MS = 2_500L
 private const val MIX_SEEK_WAIT_MS = 5_000L
 /** How long a change of song waits for the player to say where the new song is. */
 private const val MIX_REPORT_WAIT_MS = 1_500L
+/** A song left with more than this to go before its end, or before its mix, was skipped by hand. */
+private const val MIX_EARLIEST_MS = 25_000L
+/** A song with no more than this left when it gives way has ended by itself. */
+private const val ENDING_MS = 3_000L
+/** A change of song this soon after the app's own next button was pressed is that press. */
+private const val OWN_SKIP_MS = 3_000L
 
 /**
  * A change of song in a run, for the moment until the new song (track key [toKey]) has said where
  * it is. Until then the [list] that was on screen stays, and keeps the time of [before], the song
  * that was playing, whose own time is [shiftMs] behind the list's. So nothing moves when the list
- * then goes on into the new song.
+ * then goes on into the new song. A song skipped by hand stopped at [stoppedAt], and the list with it.
  */
-private class MixWatch(val list: MixSession, private val shiftMs: Long, val before: NowPlaying, val toKey: String) {
+private class MixWatch(
+    val list: MixSession, private val shiftMs: Long, val before: NowPlaying, val toKey: String, private val stoppedAt: Long?,
+) {
     /** Where [before] would be by now on its own clock, had it gone on as it was. */
     fun songMs(now: Long): Long =
         if (before.isPlaying) before.positionMs + ((now - before.updateRealtime) * before.speed).toLong() else before.positionMs
 
-    /** The same on the list's clock. */
-    fun listMs(now: Long): Long = songMs(now) + shiftMs
+    /** Where the list on screen is meanwhile, on its own clock. */
+    fun listMs(now: Long): Long = songMs(stoppedAt ?: now) + shiftMs
 
     /** Whether [np] still reports the position of [before], under the new song's name. */
     fun isCarriedOver(np: NowPlaying): Boolean = np.positionMs == before.positionMs && np.updateRealtime == before.updateRealtime
@@ -147,8 +162,8 @@ private const val PREROLL_GIVE_UP_MS = 6_000L
 /** A cover fetched ahead for the song [key]. It is shown while the player still reports [previous], the last song's. */
 private class EarlyArt(val key: String, val bitmap: Bitmap, val previous: Bitmap?)
 
-/** Timing applied to the lyrics. [output] is the device it is saved for, or null for a mic song. */
-data class Timing(val offsetMs: Long, val output: AudioOutput?, val isDefault: Boolean)
+/** Timing applied to the lyrics. [output] is what it is saved for: the device playing, or with [mic] the microphone listening. */
+data class Timing(val offsetMs: Long, val output: AudioOutput?, val isDefault: Boolean, val mic: Boolean = false)
 
 data class TrackInfo(
     val key: String,
@@ -204,8 +219,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** The mic may only be used while the app is on screen. */
     private val foreground = MutableStateFlow(false)
 
-    /** Timing nudge (ms) for a song found with the mic, reset when the song changes. */
-    private val _nudge = MutableStateFlow(0L)
+    /** Where the last automatic check heard the song, when that was far from the lyrics. */
+    private var heardElsewhere: RecognizedTrack? = null
 
     /** Recognised-song clock pause state. */
     private val _clockPaused = MutableStateFlow(false)
@@ -236,10 +251,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * The timing in use right now. For music playing on this phone it is the offset saved for the
-     * output device. A song found with the mic is heard directly, so it only uses its own nudge.
+     * output device. A song found with the mic uses the one saved for that microphone.
      */
-    val timing: StateFlow<Timing> = combine(_mode, output, settings.state, _nudge) { mode, out, s, nudge ->
-        if (mode == Mode.RECOGNIZED) Timing(nudge, null, isDefault = nudge == 0L)
+    val timing: StateFlow<Timing> = combine(
+        _mode, output, settings.state, _recognized.map { it?.mic }.distinctUntilChanged(),
+    ) { mode, out, s, heardBy ->
+        val mic = heardBy ?: AudioOutput.PhoneMic
+        if (mode == Mode.RECOGNIZED) Timing(s.micTimings[mic.key]?.offsetMs ?: 0L, mic, isDefault = mic.key !in s.micTimings, mic = true)
         else Timing(s.offsetFor(out), out, isDefault = out.key !in s.deviceTimings)
     }.stateIn(viewModelScope, SharingStarted.Eagerly, Timing(0, null, true))
 
@@ -291,19 +309,39 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
+    /**
+     * The Spotify Canvas of the song on screen, once it has been found and downloaded. Looked for
+     * a moment after the song appears, so songs that are skipped through cost nothing.
+     */
+    val canvas: StateFlow<File?> = combine(
+        track.map { it?.spotifyId }.distinctUntilChanged(),
+        settings.state.map { it.canvas }.distinctUntilChanged(),
+        SpotifyAuth.state.map { it.signedIn }.distinctUntilChanged(),
+        foreground,
+    ) { id, on, signedIn, fg -> id.takeIf { on && signedIn && fg } }
+        .distinctUntilChanged()
+        .transformLatest { id ->
+            if (id == null) return@transformLatest emit(null)
+            if (!graph.canvas.isKnown(id)) {
+                emit(null)
+                delay(CANVAS_DELAY_MS)
+            }
+            emit(graph.canvas.find(id))
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
     /** The lyrics of the song on screen by itself. */
     private val ownLyrics: StateFlow<LyricsState> = combine(
         track.map { t -> t?.let { Triple(it.key, it, Unit) } }.distinctUntilChanged { a, b -> a?.first == b?.first },
         retry,
     ) { t, r -> t?.second to r }
         .flatMapLatest { (t, r) ->
-            // lastLoad is kept through a brief null, so the same song coming back keeps its nudge and cache.
+            // lastLoad is kept through a brief null, so the same song coming back keeps its cache.
             if (t == null) return@flatMapLatest flowOf(LyricsState.Idle)
             val prev = lastLoad
             lastLoad = t.key to r.second
             val sameSong = prev?.first == t.key
             val isRetry = sameSong && prev.second != r.second && r.first == t.key
-            if (!sameSong) _nudge.value = 0
             // A reload keeps the current words on screen until the fresh result arrives.
             val kept = lastLoaded?.takeIf { isRetry && it.first == t.key }?.second
             val query = TrackQuery(t.title, t.artist, t.album, t.durationMs, t.spotifyId)
@@ -355,12 +393,34 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private val _update = MutableStateFlow<AppUpdate?>(null)
+    /** A newer version found on GitHub when the app opened, until it is put off or skipped. */
+    val update: StateFlow<AppUpdate?> = _update.asStateFlow()
+
+    /** Puts the update off until the app is next opened. */
+    fun dismissUpdate() {
+        _update.value = null
+    }
+
+    /** Doesn't mention this version again. A later one still is. */
+    fun skipUpdate() {
+        val version = _update.value?.version ?: return
+        settings.update { it.copy(skippedVersion = version) }
+        _update.value = null
+    }
+
     private val _cacheStats = MutableStateFlow<Pair<Int, Long>?>(null)
     /** Saved songs and their size on disk, once [refreshCacheStats] has run. */
     val cacheStats: StateFlow<Pair<Int, Long>?> = _cacheStats.asStateFlow()
 
     init {
         runCatching { connectivity?.registerDefaultNetworkCallback(netCallback) }
+        if (settings.state.value.checkUpdates) {
+            viewModelScope.launch {
+                _update.value = UpdateCheck.newerThan(BuildConfig.VERSION_NAME)
+                    ?.takeIf { it.version != settings.state.value.skippedVersion }
+            }
+        }
         // A new song on the phone takes over from a song found with the mic.
         viewModelScope.launch {
             media.nowPlaying.map { np -> np?.takeIf { it.isPlaying }?.trackKey }.distinctUntilChanged().collect { key ->
@@ -631,8 +691,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * The player went from [before] to [np]. The list on screen goes on into the new song's
-     * lines, whether the player mixed the two, the old one ended, or the new one was skipped to.
-     * It holds still until the new song has said where it is, and the song is then joined on from
+     * lines, whether the player mixed the two or the old one ended. So it does when the new one
+     * was skipped to by hand, if that is asked for in the settings: the old song's line then stops
+     * where the song did. Otherwise a skip starts the list over. The list holds still until the new song has said where it is, and the song is then joined on from
      * there: see [joinAt]. Going back to a song the list has been through starts the list over,
      * and so does a song whose lyrics aren't in or have no timing.
      */
@@ -659,13 +720,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val base = shown.upTo(from) ?: return over("too far back in the list")
         // What was joined on ahead of time, when the new song is the one that was expected.
         val planned = shown.takeIf { to == from + 1 }
+        // A mix or an ending comes in a song's last moments. Leaving it well before those, or by
+        // the app's own next button, is a skip by hand. One made later only shows by the new
+        // song stopping to load, which is seen below.
+        val due = planned?.songs?.last()?.takeIf { it.join == MixSession.Join.SAVED }?.into?.startAMs
+            ?: before.durationMs.takeIf { it > 0 }
+        val early = since - media.ownSkipAt < OWN_SKIP_MS || (due != null && before.livePosition(since) < due - MIX_EARLIEST_MS)
+        val carryOnSkip = settings.state.value.continuousOnSkip
+        if (early && !carryOnSkip) return over("skipped by hand")
         val words = repo.peek(TrackQuery(np.title, np.artist, spotifyTrackId = id))
         if (words == null) {
             // With nothing to join it on again from, what was planned stays as it is.
-            if (planned == null) over("the new song's lyrics aren't in yet")
+            if (planned == null || early) over("the new song's lyrics aren't in yet")
             return
         }
-        val watch = MixWatch(shown, base.songs.last().shiftMs, before, np.trackKey)
+        val watch = MixWatch(shown, base.songs.last().shiftMs, before, np.trackKey, since.takeIf { early })
         mixWatch.value = watch
         mixCheck = viewModelScope.launch {
             try {
@@ -678,14 +747,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 if (later != null) {
                     val now = SystemClock.elapsedRealtime()
                     // A song that plays on has been going all along. One that stops to load was
-                    // sent to by hand, and the old song stopped where it was then.
-                    val atOld = watch.songMs(if (later.isPlaying) now else since)
+                    // sent to by hand, and the old song stopped where it was then,
+                    // unless the old song was at its end anyway, and the next one is just slow to start.
+                    val left = before.durationMs - watch.songMs(since)
+                    val byHand = early || (!later.isPlaying && (before.durationMs <= 0 || left > ENDING_MS))
+                    val atOld = watch.songMs(if (byHand) since else now)
                     val atNew = later.livePosition(now)
-                    val joined = joinAt(base, planned, id, np.title, words, atOld, atNew, later.isPlaying)
+                    val joined = if (byHand && !carryOnSkip) null else joinAt(base, planned, id, np.title, words, atOld, atNew, byHand)
                     Log.d(
                         MIX_TAG,
                         "song changed at ${watch.songMs(since)} of ${before.durationMs}, new song at $atNew" +
-                            (if (later.isPlaying) "" else " and loading") + ": " + when {
+                            (if (later.isPlaying) "" else " and loading") + (if (byHand) ", by hand" else "") + ": " + when {
                             joined == null -> "nothing of it to go on to, list starts over"
                             joined === planned -> "as planned"
                             joined.songs.last().join == MixSession.Join.SAVED -> "saved transition, moved to fit"
@@ -706,20 +778,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * its own time when the new one was at [atNewMs] of its own. A saved transition that was
      * [planned] for and that the player is following stays, moved by however little the player is
      * off it, so the lines of both songs still alternate through the overlap. Anything else is
-     * joined where the songs were found to be.
+     * joined where the songs were found to be, and a song skipped [byHand] ends right there.
      */
     private fun joinAt(
         base: MixSession, planned: MixSession?, id: String, title: String, words: Lyrics,
-        atOldMs: Long, atNewMs: Long, playing: Boolean,
+        atOldMs: Long, atNewMs: Long, byHand: Boolean,
     ): MixSession? {
         val plan = planned?.songs?.last()
         val saved = plan?.into?.takeIf { plan.join == MixSession.Join.SAVED }
-        if (plan != null && saved != null && playing) {
+        if (plan != null && saved != null && !byHand) {
             val off = base.songs.last().shiftMs + atOldMs - atNewMs - plan.shiftMs
             if (abs(off) <= MIX_EXACT_MS) return planned
             if (abs(off) <= MIX_TRUST_MS) return base.add(id, title, words, saved.copy(startAMs = saved.startAMs + off)) ?: planned
         }
-        return base.addHeard(id, title, words, atOldMs, atNewMs)
+        return base.addHeard(id, title, words, atOldMs, atNewMs, cut = byHand)
     }
 
     /**
@@ -833,19 +905,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return base + timing.value.offsetMs
     }
 
-    /** Moves the lyrics earlier (positive) or later. Saved for the current device, so it sticks. */
+    /** Moves the lyrics earlier (positive) or later. Saved for the current device or microphone, so it sticks. */
     fun nudge(deltaMs: Long) {
-        if (_mode.value == Mode.RECOGNIZED) {
-            _nudge.value += deltaMs
+        val now = timing.value
+        if (now.mic) {
+            settings.setMicTiming(now.output ?: AudioOutput.PhoneMic, now.offsetMs + deltaMs)
         } else {
             val out = output.value
             settings.setTiming(out, settings.state.value.offsetFor(out) + deltaMs)
         }
     }
 
-    /** Back to the default timing for the current device, or no nudge for a mic song. */
+    /** Back to the default timing for the current device or microphone. */
     fun resetTiming() {
-        if (_mode.value == Mode.RECOGNIZED) _nudge.value = 0 else settings.forgetTiming(output.value.key)
+        val now = timing.value
+        if (now.mic) settings.forgetMicTiming((now.output ?: AudioOutput.PhoneMic).key) else settings.forgetTiming(output.value.key)
     }
 
     /** Plays from [line], a line of the lyrics on screen. */
@@ -906,7 +980,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         relistenJob?.cancel()
         _recognized.value = null
         _clockPaused.value = false
-        _nudge.value = 0
         playingKeyAtSwitch = null
         _mode.value = Mode.NOW_PLAYING
     }
@@ -941,7 +1014,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * The detect button on the lyrics: listens again without leaving them. The same song gets its
-     * timing corrected, a different one takes over. Returns false when the mic isn't allowed, so
+     * timing corrected, a different one takes over. The automatic check does the same for a
+     * different song, but leaves the same song's timing as it is: see [applyRelisten]. Returns false when the mic isn't allowed, so
      * the caller can open the listen screen, which asks for it.
      */
     fun relisten(): Boolean {
@@ -973,19 +1047,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun applyRelisten(found: RecognizedTrack, manual: Boolean): ListenNote {
         val cur = _recognized.value
+        val elsewhere = heardElsewhere
+        heardElsewhere = null
         if (cur == null || _mode.value != Mode.RECOGNIZED || !sameSong(cur, found)) {
             showRecognizedLyrics(found)
             viewModelScope.launch { useSpotifyCover(found) }
             return ListenNote.NEW_SONG
         }
         val now = SystemClock.elapsedRealtime()
-        val shown = if (_clockPaused.value) pausedAtPosition else cur.positionMs + (now - cur.anchorRealtime)
-        val heard = found.positionMs + (now - found.anchorRealtime)
-        // Each match is only good to a fraction of a second, so the automatic check leaves small
-        // differences alone instead of making the lyrics twitch every minute.
-        if (manual || abs(heard - shown) > AUTO_RESYNC_MS) {
+        fun RecognizedTrack.at() = positionMs + (now - anchorRealtime)
+        val shown = if (_clockPaused.value) pausedAtPosition else cur.at()
+        // A second match of the same song is no better than the first, and can be well off: a
+        // chorus is heard as any of its repeats. So the automatic check leaves the timing alone.
+        // Only when two checks in a row hear the song at the same place far from the lyrics has
+        // it really moved, started again on repeat for one.
+        val moved = abs(found.at() - shown) > AUTO_FAR_MS
+        val agreed = moved && elsewhere != null && abs(found.at() - elsewhere.at()) < AUTO_AGREE_MS
+        if (manual || agreed) {
             _clockPaused.value = false
-            _recognized.value = cur.copy(positionMs = found.positionMs, anchorRealtime = found.anchorRealtime)
+            _recognized.value = cur.copy(positionMs = found.positionMs, anchorRealtime = found.anchorRealtime, mic = found.mic)
+        } else if (moved) {
+            heardElsewhere = found
         }
         return ListenNote.RESYNCED
     }

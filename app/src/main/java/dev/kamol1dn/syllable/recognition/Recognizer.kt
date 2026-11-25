@@ -8,6 +8,7 @@ import android.media.MediaRecorder
 import android.os.SystemClock
 import android.util.Log
 import dev.kamol1dn.syllable.lyrics.Net
+import dev.kamol1dn.syllable.media.AudioOutput
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -37,6 +38,8 @@ data class RecognizedTrack(
     val anchorRealtime: Long,
     val shazamUrl: String?,
     val spotifyTrackId: String? = null,
+    /** The microphone it was heard through. */
+    val mic: AudioOutput = AudioOutput.PhoneMic,
 )
 
 sealed interface RecognitionEvent {
@@ -118,7 +121,8 @@ object Recognizer {
                     val match = result.getOrNull()
                     if (match != null) {
                         // The match offset is the song position at the first recorded sample.
-                        emit(RecognitionEvent.Found(match.copy(anchorRealtime = firstSampleRealtime(rec) ?: start)))
+                        val mic = runCatching { AudioOutput.mic(rec.routedDevice) }.getOrDefault(AudioOutput.PhoneMic)
+                        emit(RecognitionEvent.Found(match.copy(anchorRealtime = firstSampleRealtime(rec) ?: start, mic = mic)))
                         return@flow
                     }
                     if (attempt < attemptsAtMs.size) emit(RecognitionEvent.Listening(0f, sampleMs))

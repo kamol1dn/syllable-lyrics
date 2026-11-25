@@ -127,6 +127,19 @@ class MixedLyricsTest {
     }
 
     @Test
+    fun aSongSkippedByHandStopsInTheMiddleOfItsLine() {
+        // Skipped at 200 s, half-way through the line from 198 s to 202 s.
+        val skipped = MixSession.start("A", "First", a)!!.addHeard("B", "Second", b, 200_000, 0, cut = true)!!
+        val last = skipped.lyrics.lines.last { it.part == 0 }
+        assertEquals("sung into the mix", last.text)
+        assertEquals(200_000L, last.endMs)
+        assertTrue(last.words.all { it.endMs <= 200_000L && it.startMs <= it.endMs })
+        // A line that was over by then is as it was.
+        assertEquals(a.lines[0], skipped.lyrics.lines[0])
+        assertEquals(listOf("skipped", "comes in", "later on"), skipped.lyrics.lines.filter { it.part == 1 }.map { it.text })
+    }
+
+    @Test
     fun withNothingKnownTheNextSongFollowsWhenThisOneEnds() {
         val planned = MixSession.start("A", "First", a)!!.addAfter("B", "Second", b, 215_000)!!
         // All of both songs, the second from its top.

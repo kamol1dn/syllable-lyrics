@@ -10,6 +10,7 @@ import dev.kamol1dn.syllable.lyrics.LyricsRepository
 import dev.kamol1dn.syllable.media.AudioOutputTracker
 import dev.kamol1dn.syllable.media.MediaSessionTracker
 import dev.kamol1dn.syllable.spotify.MixStore
+import dev.kamol1dn.syllable.spotify.SpotifyCanvas
 import dev.kamol1dn.syllable.spotify.SpotifyAuth
 import dev.kamol1dn.syllable.ui.warmDefaultCover
 
@@ -28,6 +29,8 @@ class SyllableApp : Application() {
         private set
     lateinit var mix: MixStore
         private set
+    lateinit var canvas: SpotifyCanvas
+        private set
 
     @OptIn(InternalComposeUiApi::class, ExperimentalComposeUiApi::class)
     override fun onCreate() {
@@ -42,6 +45,7 @@ class SyllableApp : Application() {
         lyrics = LyricsRepository(this, settings)
         SpotifyAuth.init(this)
         mix = MixStore(this)
+        canvas = SpotifyCanvas(this)
         // Blur the stand-in background now, so the first screen doesn't wait for it.
         Thread(::warmDefaultCover).start()
     }

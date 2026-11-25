@@ -96,6 +96,9 @@ suspend fun warmCover(art: Bitmap) {
         ?.let { preparedCovers.put(art.generationId, it) }
 }
 
+/** A Canvas is a sharp picture, so it is dimmed at least this much under the lyrics. */
+private const val CANVAS_VEIL = 0.5f
+
 /** Last background clock value, so the pattern carries on across screens. */
 private var lastClock = 0f
 
@@ -108,6 +111,8 @@ fun ArtBackground(
     artwork: Bitmap?,
     modifier: Modifier = Modifier,
     playing: Boolean = true,
+    /** The song's Spotify Canvas. It plays over the cover's colours, under a veil that keeps the lyrics readable. */
+    canvas: java.io.File? = null,
     content: @Composable BoxScope.() -> Unit,
 ) {
     val source = artwork?.takeIf { !it.isRecycled }
@@ -127,7 +132,9 @@ fun ArtBackground(
         }
     }
     // Brighter covers get a darker veil so white lyrics stay readable.
-    val veil by animateFloatAsState(0.15f + 0.45f * (blurred?.luminance ?: 0.3f), tween(1000), label = "veil")
+    val veil by animateFloatAsState(
+        (0.15f + 0.45f * (blurred?.luminance ?: 0.3f)).let { if (canvas != null) maxOf(it, CANVAS_VEIL) else it }, tween(1000), label = "veil",
+    )
 
     // Shared clock: speed eases toward its target like Kawarp's, so pausing glides to a halt.
     val time = remember { mutableFloatStateOf(lastClock) }
@@ -152,6 +159,7 @@ fun ArtBackground(
                 if (Build.VERSION.SDK_INT >= 33) FluidLayer(bmp, time) else DriftLayer(bmp, time)
             }
         }
+        if (canvas != null) LoopingVideo(canvas, Modifier.fillMaxSize())
         Box(
             Modifier.fillMaxSize().drawBehind {
                 drawRect(

@@ -8,6 +8,15 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings as AndroidSettings
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import dev.kamol1dn.syllable.AppUpdate
+import dev.kamol1dn.syllable.BuildConfig
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -43,6 +52,37 @@ fun openAppInfo(ctx: Context) = runCatching {
 /** Opens a link, and does nothing if there's no browser. */
 fun openUrl(ctx: Context, url: String) = runCatching {
     ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+}
+
+/**
+ * Says that a newer version is out. Download hands its APK to the browser, which fetches it, and
+ * closes the notice for now.
+ */
+@Composable
+fun UpdateDialog(update: AppUpdate, onLater: () -> Unit, onSkip: () -> Unit) {
+    val ctx = LocalContext.current
+    AlertDialog(
+        onDismissRequest = onLater,
+        containerColor = MaterialTheme.colorScheme.surfaceContainer,
+        title = { Text("Syllable ${update.version} is out", color = Color.White) },
+        text = {
+            Column(Modifier.heightIn(max = 280.dp).verticalScroll(rememberScrollState())) {
+                Text(
+                    update.notes.ifEmpty { "A newer version than this one (${BuildConfig.VERSION_NAME}) is ready to download." },
+                    color = Color.White.copy(alpha = 0.7f),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { openUrl(ctx, update.downloadUrl); onLater() }) { Text("Download", color = Accent, fontWeight = FontWeight.Bold) }
+        },
+        dismissButton = {
+            Row {
+                TextButton(onClick = onSkip) { Text("Skip this version", color = Color.White.copy(alpha = 0.7f)) }
+                TextButton(onClick = onLater) { Text("Later", color = Color.White) }
+            }
+        },
+    )
 }
 
 /** Android 13+ blocks notification access for apps installed from an APK file until you allow it. */

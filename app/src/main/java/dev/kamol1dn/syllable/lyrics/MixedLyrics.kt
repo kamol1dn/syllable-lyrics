@@ -20,6 +20,9 @@ private const val LEAD_IN_MS = 300L
  * With [underWay] the incoming song was found already playing at [startBMs] rather than planned
  * to come in there, so a line it is in the middle of is kept as well.
  *
+ * With [cutAtMs] the outgoing song stopped dead at that moment of the list's clock, as when a song
+ * is skipped by hand: a line it was in the middle of ends there, and none of its later lines stay.
+ *
  * Without timing on both sides there is nothing to line up, and null comes back. So it does when
  * the incoming song has no lines left to add, since then there is nothing to go on to.
  */
@@ -31,6 +34,7 @@ fun joinMixed(
     shiftMs: Long,
     overlapEndMs: Long,
     underWay: Boolean = false,
+    cutAtMs: Long? = null,
 ): Lyrics? {
     if (soFar.sync == SyncType.NONE || incoming.sync == SyncType.NONE) return null
     fun List<LyricWord>.shifted() = map { it.copy(startMs = it.startMs + shiftMs, endMs = it.endMs + shiftMs) }
@@ -40,7 +44,8 @@ fun joinMixed(
     val markOld = sync == SyncType.WORD && soFar.sync == SyncType.LINE
     val markNew = sync == SyncType.WORD && incoming.sync == SyncType.LINE
     val kept = soFar.lines
-        .filterNot { it.part == part - 1 && it.startMs >= overlapEndMs - TOO_LATE_MS }
+        .filterNot { it.part == part - 1 && it.startMs >= (cutAtMs ?: (overlapEndMs - TOO_LATE_MS)) }
+        .map { if (cutAtMs != null && it.part == part - 1 && it.endMs > cutAtMs) it.endedAt(cutAtMs) else it }
         .map { if (markOld) it.copy(lineTimed = true) else it }
     val added = incoming.lines
         .filter { (it.startMs >= startBMs - LEAD_IN_MS || (underWay && it.endMs > startBMs)) && it.words.isNotEmpty() }
@@ -57,4 +62,10 @@ fun joinMixed(
     if (added.isEmpty()) return null
     // The sort is stable, so where two lines start together the outgoing song's comes first.
     return Lyrics((kept + added).sortedBy { it.startMs }, sync, incoming.source, incoming.credits)
+}
+
+/** The line as it is when its song stops at [ms]: what was still to be sung of it no longer waits to be. */
+private fun LyricLine.endedAt(ms: Long): LyricLine {
+    fun List<LyricWord>.ended() = map { it.copy(startMs = minOf(it.startMs, ms), endMs = minOf(it.endMs, ms)) }
+    return copy(endMs = ms, words = words.ended(), background = background.ended())
 }

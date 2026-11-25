@@ -4,6 +4,15 @@ import android.graphics.Bitmap
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.EnterExitState
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.animateDp
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
@@ -132,6 +141,11 @@ private val SongChangeEasing = CubicBezierEasing(0.2f, 0f, 0f, 1f)
 private const val SONG_CHANGE_MS = 650
 private fun <T> songChange() = tween<T>(SONG_CHANGE_MS, easing = SongChangeEasing)
 
+/** The cover's own change of song, with Spicy Lyrics' timing: a slow start, a fast middle and a soft landing. */
+private val CoverSlideEasing = CubicBezierEasing(0.835f, -0.008f, 0.149f, 0.866f)
+private const val COVER_SLIDE_MS = 750
+private const val COVER_BLUR_MS = 850
+
 /** True when the window is wide enough to show the track panel beside the lyrics. */
 fun isWideLayout(width: Dp, height: Dp) = width > height && width >= 560.dp
 
@@ -202,7 +216,8 @@ fun MainScreen(vm: MainViewModel, onListen: () -> Unit, onSettings: () -> Unit, 
     val onDetect = { if (mode != Mode.RECOGNIZED || !vm.relisten()) onListen() }
     val openPlayer: (() -> Unit)? = if (np != null && mode == Mode.NOW_PLAYING) ({ vm.media.openPlayerApp() }) else null
 
-    ArtBackground(artwork, playing = playing) {
+    val canvas by vm.canvas.collectAsStateWithLifecycle()
+    ArtBackground(artwork, playing = playing, canvas = canvas) {
         BoxWithConstraints(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
             val wide = isWideLayout(maxWidth, maxHeight)
             val boxW = maxWidth
@@ -302,12 +317,30 @@ private fun Artwork(artwork: Bitmap?, trackKey: String, size: Dp, shape: Shape, 
         AnimatedContent(
             targetState = shown.key to artwork,
             contentKey = { it.first },
+            // As in Spicy Lyrics: the new cover slides in from the right over the old one, which
+            // stays where it is and goes out of focus underneath.
             transitionSpec = {
-                slideInVertically(songChange()) { it } togetherWith slideOutVertically(songChange()) { -it }
+                slideInHorizontally(tween(COVER_SLIDE_MS, easing = CoverSlideEasing)) { it } togetherWith
+                    ExitTransition.KeepUntilTransitionsFinished
             },
             label = "artSong",
         ) { (_, current) ->
-            Crossfade(current, animationSpec = tween(600), label = "art") { art ->
+            val blur by transition.animateDp({ tween(COVER_BLUR_MS) }, label = "artBlur") {
+                if (it == EnterExitState.PostExit) 12.dp else 0.dp
+            }
+            Crossfade(
+                current, animationSpec = tween(600), label = "art",
+                modifier = Modifier.fillMaxSize()
+                    // The shadow the incoming cover casts on the one it slides over.
+                    .drawBehind {
+                        val w = 20.dp.toPx()
+                        drawRect(
+                            Brush.horizontalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.3f)), startX = -w, endX = 0f),
+                            topLeft = Offset(-w, 0f), size = Size(w, this.size.height),
+                        )
+                    }
+                    .then(if (blur > 0.dp) Modifier.blur(blur) else Modifier),
+            ) { art ->
                 if (art != null) {
                     Image(remember(art) { art.asImageBitmap() }, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
                 } else {
@@ -492,7 +525,7 @@ private fun SyncSection(vm: MainViewModel, show: Boolean, compact: Boolean) {
 @Composable
 private fun TimingTarget(timing: Timing, onReset: () -> Unit) {
     val out = timing.output
-    val icon = when (out?.kind) {
+    val icon = when (out?.kind.takeUnless { timing.mic }) {
         null -> Icons.Rounded.Mic
         OutputKind.PHONE -> Icons.Rounded.PhoneAndroid
         OutputKind.WIRED -> Icons.Rounded.Headphones
@@ -501,7 +534,7 @@ private fun TimingTarget(timing: Timing, onReset: () -> Unit) {
         OutputKind.REMOTE -> Icons.Rounded.Cast
     }
     val label = when {
-        out == null -> "Timing for this song"
+        out == null -> "Microphone"
         timing.isDefault && out.kind == OutputKind.BLUETOOTH -> "${out.name} · Bluetooth default"
         timing.isDefault -> out.name
         else -> "Saved for ${out.name}"

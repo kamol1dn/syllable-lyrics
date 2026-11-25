@@ -36,6 +36,16 @@ data class SettingsState(
      * When signed in, the transitions saved in the playlist that is playing are read for it.
      */
     val continuousLyrics: Boolean = true,
+    /** Whether they also run on into a song you skip to by hand, rather than starting over with it. */
+    val continuousOnSkip: Boolean = true,
+    /** Timing per microphone for songs found with the mic, keyed by [AudioOutput.key] of the mic. */
+    val micTimings: Map<String, DeviceTiming> = emptyMap(),
+    /** Plays the song's Spotify Canvas, its short looping clip, behind the lyrics. */
+    val canvas: Boolean = true,
+    /** Looks on GitHub for a newer version when the app opens. */
+    val checkUpdates: Boolean = true,
+    /** The newest version you chose not to hear about again. */
+    val skippedVersion: String = "",
 ) {
     fun defaultOffset(kind: OutputKind): Long = if (kind == OutputKind.BLUETOOTH) bluetoothDefaultMs else 0L
 
@@ -73,6 +83,11 @@ class Settings(context: Context) {
         keepScreenOn = prefs.getBoolean("screen_on", true),
         autoListen = prefs.getBoolean("auto_listen", true),
         continuousLyrics = prefs.getBoolean("continuous_lyrics", true),
+        continuousOnSkip = prefs.getBoolean("continuous_on_skip", true),
+        micTimings = readTimings(prefs.getString("mic_timings", null)),
+        canvas = prefs.getBoolean("canvas", true),
+        checkUpdates = prefs.getBoolean("check_updates", true),
+        skippedVersion = prefs.getString("skipped_version", "").orEmpty(),
     )
 
     fun update(block: (SettingsState) -> SettingsState) {
@@ -91,6 +106,11 @@ class Settings(context: Context) {
             .putBoolean("screen_on", s.keepScreenOn)
             .putBoolean("auto_listen", s.autoListen)
             .putBoolean("continuous_lyrics", s.continuousLyrics)
+            .putBoolean("continuous_on_skip", s.continuousOnSkip)
+            .putString("mic_timings", writeTimings(s.micTimings))
+            .putBoolean("canvas", s.canvas)
+            .putBoolean("check_updates", s.checkUpdates)
+            .putString("skipped_version", s.skippedVersion)
             .remove("mix_transitions") // the same setting while it was an experiment and off to begin with
             .apply()
     }
@@ -103,6 +123,14 @@ class Settings(context: Context) {
 
     /** Forgets the saved timing for a device, so it goes back to the default. */
     fun forgetTiming(key: String) = update { it.copy(deviceTimings = it.deviceTimings - key) }
+
+    /** Saves the timing for songs heard through the microphone [mic]. */
+    fun setMicTiming(mic: AudioOutput, offsetMs: Long) = update {
+        val clamped = offsetMs.coerceIn(-SettingsState.MAX_OFFSET_MS, SettingsState.MAX_OFFSET_MS)
+        it.copy(micTimings = it.micTimings + (mic.key to DeviceTiming(mic.name, mic.kind, clamped)))
+    }
+
+    fun forgetMicTiming(key: String) = update { it.copy(micTimings = it.micTimings - key) }
 
     private fun readTimings(json: String?): Map<String, DeviceTiming> = runCatching {
         val o = JSONObject(json ?: return emptyMap())

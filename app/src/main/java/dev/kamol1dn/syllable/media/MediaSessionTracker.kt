@@ -277,8 +277,17 @@ class MediaSessionTracker(private val context: Context) {
         else c.transportControls.play()
     }
 
-    fun next() = active?.transportControls?.skipToNext()
+    /** When the app itself last sent the player to another song, on the [SystemClock.elapsedRealtime] clock. */
+    @Volatile var ownSkipAt = -60_000L
+        private set
+
+    fun next() {
+        ownSkipAt = SystemClock.elapsedRealtime()
+        active?.transportControls?.skipToNext()
+    }
+
     fun previous() {
+        ownSkipAt = SystemClock.elapsedRealtime()
         ownSeekUntil = SystemClock.elapsedRealtime() + OWN_SEEK_MS
         active?.transportControls?.skipToPrevious()
     }

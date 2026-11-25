@@ -189,16 +189,25 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit, onSpotifyLogin: () -> 
                     ) { v -> vm.settings.update { it.copy(blurInactive = v) } }
                     Toggle("Keep screen on while lyrics play", s.keepScreenOn) { v -> vm.settings.update { it.copy(keepScreenOn = v) } }
                     Toggle(
+                        "Spotify Canvas", s.canvas,
+                        subtitle = "Plays the song's looping clip behind the lyrics, when it has one. Needs the Spotify sign-in",
+                    ) { v -> vm.settings.update { it.copy(canvas = v) } }
+                    Toggle(
                         "Carry on from song to song", s.continuousLyrics,
                         subtitle = "With Spotify, the next song's lines follow in the same list, through its mixes too",
                     ) { v -> vm.settings.update { it.copy(continuousLyrics = v) } }
+                    Toggle(
+                        "Also when I skip a song", s.continuousOnSkip && s.continuousLyrics,
+                        subtitle = "Off, a song you skip to starts its lyrics afresh",
+                        enabled = s.continuousLyrics,
+                    ) { v -> vm.settings.update { it.copy(continuousOnSkip = v) } }
                 }
 
                 Section("Songs found with the mic")
                 Card {
                     Toggle(
                         "Keep listening", s.autoListen,
-                        subtitle = "Checks the mic about once a minute to stay in time and to catch the next song",
+                        subtitle = "Checks the mic about once a minute to catch the next song. The same song keeps its timing",
                     ) { v -> vm.settings.update { it.copy(autoListen = v) } }
                 }
 
@@ -208,7 +217,8 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit, onSpotifyLogin: () -> 
                     Text("Playing through: ${output.name}", color = Color.White)
                     Helper(
                         "Syllable remembers the timing for each speaker and pair of headphones, and uses it again when you play " +
-                            "through them. Change it with the timing button under the lyrics.",
+                            "through them, and for each microphone that songs are identified with. Change it with the timing " +
+                            "button under the lyrics.",
                         Modifier.padding(top = 2.dp),
                     )
                     Spacer(Modifier.height(14.dp))
@@ -226,16 +236,19 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit, onSpotifyLogin: () -> 
                             stateDescription = formatOffset(s.bluetoothDefaultMs, unit = " seconds")
                         },
                     )
-                    if (s.deviceTimings.isNotEmpty()) {
+                    val saved = s.deviceTimings.map { Triple(it.key, it.value, false) } + s.micTimings.map { Triple(it.key, it.value, true) }
+                    if (saved.isNotEmpty()) {
                         Spacer(Modifier.height(6.dp))
                         Text("Saved", color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                        s.deviceTimings.entries.sortedBy { it.value.name.lowercase() }.forEach { (key, d) ->
+                        saved.sortedBy { it.second.name.lowercase() }.forEach { (key, d, mic) ->
                             Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Column(Modifier.weight(1f)) {
                                     Text(d.name, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     Helper(formatOffset(d.offsetMs))
                                 }
-                                TextButton(onClick = { vm.settings.forgetTiming(key) }) { Text("Forget", color = Accent) }
+                                TextButton(onClick = { if (mic) vm.settings.forgetMicTiming(key) else vm.settings.forgetTiming(key) }) {
+                                    Text("Forget", color = Accent)
+                                }
                             }
                         }
                     }
@@ -363,12 +376,16 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit, onSpotifyLogin: () -> 
                 Card {
                     Text("Syllable ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})", color = Color.White, fontWeight = FontWeight.SemiBold)
                     Helper("Shows the lyrics of what you're playing, word by word.")
+                    Toggle(
+                        "Check for updates", s.checkUpdates,
+                        subtitle = "Asks GitHub for a newer version when Syllable opens",
+                    ) { v -> vm.settings.update { it.copy(checkUpdates = v, skippedVersion = "") } }
                     Text("Privacy", color = Color.White, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 14.dp))
                     Helper(
                         "Syllable uses notification access to see which song is playing and nothing else. To identify a song, it " +
                             "turns a few seconds of sound into a fingerprint on your phone and sends that to Shazam with your time " +
                             "zone and language. The recording itself isn't saved or sent. Song titles, artists and albums go to " +
-                            "LRCLIB and the lyrics sources you turn on. Your Spotify sign-in stays on this phone and is only sent to Spotify.",
+                            "LRCLIB and the lyrics sources you turn on. Checking for updates asks GitHub for the latest release. The Canvas behind the lyrics comes from Spotify. Your Spotify sign-in stays on this phone and is only sent to Spotify.",
                         Modifier.padding(top = 2.dp),
                     )
                     FlowRow(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(24.dp)) {

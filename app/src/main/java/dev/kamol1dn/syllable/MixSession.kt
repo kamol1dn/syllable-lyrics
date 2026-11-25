@@ -84,12 +84,13 @@ class MixSession private constructor(
      * on to it: the last song was at [atLastMs] of its own time and the new one at [atNewMs] of
      * its own. That covers a mix nothing was known about, a song that simply ended, and a skip.
      * The new song's lines follow from where it is, and the last song's lines that hadn't begun
-     * yet are left out.
+     * yet are left out. With [cut] the last song stopped there and then, as when it is skipped by
+     * hand, so the line it was in the middle of ends too instead of being sung out.
      */
-    fun addHeard(spotifyId: String, title: String, lyrics: Lyrics, atLastMs: Long, atNewMs: Long): MixSession? =
-        join(spotifyId, title, lyrics, MixTransition(songs.last().spotifyId, spotifyId, atLastMs, atNewMs, NO_OVERLAP_MS, 1f, false), Join.HEARD)
+    fun addHeard(spotifyId: String, title: String, lyrics: Lyrics, atLastMs: Long, atNewMs: Long, cut: Boolean = false): MixSession? =
+        join(spotifyId, title, lyrics, MixTransition(songs.last().spotifyId, spotifyId, atLastMs, atNewMs, NO_OVERLAP_MS, 1f, false), Join.HEARD, cut)
 
-    private fun join(spotifyId: String, title: String, lyrics: Lyrics, t: MixTransition, how: Join): MixSession? {
+    private fun join(spotifyId: String, title: String, lyrics: Lyrics, t: MixTransition, how: Join, cut: Boolean = false): MixSession? {
         val last = songs.last()
         // At the start of the overlap both songs are at the same moment of the list's clock.
         val shift = last.shiftMs + t.startAMs - t.startBMs
@@ -102,6 +103,7 @@ class MixSession private constructor(
             overlapEndMs = last.shiftMs + t.startAMs + t.durationMs,
             // A song found already playing may be in the middle of a line.
             underWay = how == Join.HEARD,
+            cutAtMs = if (cut) last.shiftMs + t.startAMs else null,
         ) ?: return null
         // One step back is all that is ever needed, and keeping more would keep every list there was.
         val back = if (before == null) this else MixSession(anchor, songs, this.lyrics, null)
